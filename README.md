@@ -13,7 +13,8 @@ Phase 1 provides a synchronous, platform-neutral order domain for Google Apps Sc
 
 ## Test
 
-Node.js 18 or newer is sufficient; there are no package dependencies.
+Use Node.js 22 (see `.nvmrc`). The root test suite has no package dependencies;
+the Cloudflare gateway has its own locked development dependencies.
 
 ```sh
 npm test
@@ -163,6 +164,7 @@ Then:
 3. Execute as the deploying user and allow anonymous access so Telegram can POST without a Google login. See Google's [web app deployment guide](https://developers.google.com/apps-script/guides/web).
 4. Copy the deployed `/exec` URL into `WEB_APP_URL`, deploy the Worker, and copy its public URL into `TELEGRAM_WEBHOOK_URL`.
 5. Store the same `TELEGRAM_WEBHOOK_SECRET` in GAS and Cloudflare, and store the same separate `GAS_GATEWAY_TOKEN` in both places.
+   Also set the Worker-only `TELEGRAM_OPERATIONS_CHAT_ID` to a private staff chat so DLQ backlog produces an active alert.
 6. Run `setupProject()` once from the Apps Script editor and authorize the requested scopes. It validates configuration, creates/repairs repository sheet headers, and registers the gateway for `message` and `callback_query` updates with `max_connections: 1`.
 7. Run `healthCheck()`. `telegramWebhook.status` must be `ok`, `url` must equal `expectedUrl`, pending updates must be zero, and there must be no recent webhook error.
 8. After every GAS code change, push and update the existing deployment; a `/dev` test URL is not suitable for Telegram.

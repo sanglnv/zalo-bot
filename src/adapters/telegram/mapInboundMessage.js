@@ -14,7 +14,7 @@ function telegramCallbackByteLength(value) {
  * Encode a compact callback payload. Components are URI encoded so IDs may
  * safely contain separators while the final value remains under Telegram's
  * 64-byte callback_data limit.
- * @param {{action: string, productId?: string, quantity?: number}} payload
+ * @param {{action: string, productId?: string, categoryId?: string, quantity?: number}} payload
  * @returns {string}
  */
 function encodeCallbackData(payload) {
@@ -22,7 +22,8 @@ function encodeCallbackData(payload) {
     throw new TypeError('callback payload action must be a non-empty string');
   }
   var parts = [encodeURIComponent(payload.action)];
-  if (payload.productId != null) parts.push(encodeURIComponent(String(payload.productId)));
+  var entityId = payload.productId != null ? payload.productId : payload.categoryId;
+  if (entityId != null) parts.push(encodeURIComponent(String(entityId)));
   if (payload.quantity != null) {
     if (!Number.isInteger(payload.quantity) || payload.quantity <= 0) {
       throw new TypeError('callback payload quantity must be a positive integer');
@@ -63,6 +64,14 @@ function decodeCallbackData(data) {
     }
     if (parts.length > 3) throw new Error('callback_data has too many components');
     return { action: action, productId: productId, quantity: quantity };
+  }
+  if (action === 'select_category' || action === 'admin_category') {
+    if (!productId || parts.length !== 2) throw new Error(action + ' callback_data requires categoryId');
+    return { action: action, categoryId: productId };
+  }
+  if (action === 'view_product') {
+    if (!productId || parts.length !== 2) throw new Error('view_product callback_data requires productId');
+    return { action: action, productId: productId };
   }
   if (parts.length > 1) throw new Error('callback_data action does not accept arguments: ' + action);
   return { action: action };

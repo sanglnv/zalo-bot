@@ -110,3 +110,32 @@ test('script lock rejects an overlapping order write and releases for a retry', 
   assert.equal(firstRepository.findById('order-c').confirmedAt, '2026-07-13T01:00:00.000Z');
   assert.equal(firstRepository.findById('order-c').confirmedBy, 'staff@example.com');
 });
+
+test('script lock emits a structured contention warning after one second', () => {
+  delete require.cache[require.resolve('../repositories/SheetRepositorySupport.gs')];
+  const warnings = [];
+  const originalNow = Date.now;
+  const originalConsole = global.console;
+  const readings = [1000, 2200];
+  Date.now = () => readings.shift();
+  global.console = Object.assign({}, originalConsole, { warn(value) { warnings.push(value); } });
+  global.LockService = {
+    getScriptLock: () => ({
+      tryLock: () => true,
+      releaseLock() {}
+    })
+  };
+
+  try {
+    const support = require('../repositories/SheetRepositorySupport.gs');
+    support.withScriptLock(() => undefined);
+  } finally {
+    Date.now = originalNow;
+    global.console = originalConsole;
+  }
+
+  assert.deepEqual(JSON.parse(warnings[0]), {
+    event: 'script_lock_contention',
+    waitMs: 1200
+  });
+});

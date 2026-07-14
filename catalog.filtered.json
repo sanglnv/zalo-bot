@@ -1,0 +1,597 @@
+[
+  {
+    "id": "M627869",
+    "name": "ESPRESSO",
+    "priceM": 20000,
+    "priceL": 0,
+    "basePrice": 20000
+  },
+  {
+    "id": "M261647",
+    "name": "PHIN ĐEN",
+    "priceM": 20000,
+    "priceL": 25000,
+    "basePrice": 20000
+  },
+  {
+    "id": "M662618",
+    "name": "ESPRESSO SỮA",
+    "priceM": 23000,
+    "priceL": 0,
+    "basePrice": 23000
+  },
+  {
+    "id": "M290301",
+    "name": "PHIN SỮA",
+    "priceM": 23000,
+    "priceL": 28000,
+    "basePrice": 23000
+  },
+  {
+    "id": "M361305",
+    "name": "CAFE MUỐI",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M612915",
+    "name": "CACAO SỮA",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M421020",
+    "name": "BẠC XỈU",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M434713",
+    "name": "CAPPUCHINO",
+    "priceM": 28000,
+    "priceL": 0,
+    "basePrice": 28000
+  },
+  {
+    "id": "M467794",
+    "name": "SỮA TƯƠI CAFE",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M495094",
+    "name": "AMERICANO",
+    "priceM": 20000,
+    "priceL": 25000,
+    "basePrice": 20000
+  },
+  {
+    "id": "M521644",
+    "name": "CACAO MUỐI",
+    "priceM": 32000,
+    "priceL": 38000,
+    "basePrice": 32000
+  },
+  {
+    "id": "M545460",
+    "name": "PHINDI HẠNH NHÂN",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M565607",
+    "name": "PHINDI CHOCO",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M725310",
+    "name": "CAFE CARAMEL MACCHIATO",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M999988",
+    "name": "COCA COLA",
+    "priceM": 22000,
+    "priceL": 0,
+    "basePrice": 22000
+  },
+  {
+    "id": "M126481",
+    "name": "PEPSI",
+    "priceM": 22000,
+    "priceL": 0,
+    "basePrice": 22000
+  },
+  {
+    "id": "M351071",
+    "name": "REDBULL",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M065386",
+    "name": "STING",
+    "priceM": 22000,
+    "priceL": 0,
+    "basePrice": 22000
+  },
+  {
+    "id": "M330230",
+    "name": "NƯỚC SUỐI",
+    "priceM": 15000,
+    "priceL": 0,
+    "basePrice": 15000
+  },
+  {
+    "id": "M388533",
+    "name": "7UP",
+    "priceM": 22000,
+    "priceL": 0,
+    "basePrice": 22000
+  },
+  {
+    "id": "M084687",
+    "name": "YAOURT",
+    "priceM": 22000,
+    "priceL": 27000,
+    "basePrice": 22000
+  },
+  {
+    "id": "M573275",
+    "name": "YAOURT ĐÀO",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M591442",
+    "name": "YAOURT VIỆT QUẤT",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M609723",
+    "name": "YAOURT CHANH LEO",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M625184",
+    "name": "YAOURT MÂM XÔI",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M653846",
+    "name": "YAOURT XOÀI",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M107972",
+    "name": "YAOURT DÂU",
+    "priceM": 27000,
+    "priceL": 32000,
+    "basePrice": 27000
+  },
+  {
+    "id": "M604490",
+    "name": "HỒNG TRÀ TRÂN CHÂU",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M633537",
+    "name": "LỤC TRÀ TRÂN CHÂU",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M665129",
+    "name": "TRÀ OLONG TRÂN CHÂU",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M684437",
+    "name": "HỒNG TRÀ DÂU THẠCH DỪA",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M725411",
+    "name": "LỤC TRÀ XOÀI MACCHIATO",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M749977",
+    "name": "HỒNG TRÀ THANH ĐÀO",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M767959",
+    "name": "HỒNG TRÀ ĐÀO CAM XẢ",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M789611",
+    "name": "TRÀ LÀI VẢI",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M807716",
+    "name": "TRÀ LÀI VẢI HOA HỒNG",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M963436",
+    "name": "TRÀ LÀI VẢI MÂM XÔI",
+    "priceM": 28000,
+    "priceL": 33000,
+    "basePrice": 28000
+  },
+  {
+    "id": "M988993",
+    "name": "LỤC TRÀ CHANH MẬT ONG",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M011378",
+    "name": "LỤC TRÀ CHANH DÂY",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M038040",
+    "name": "LỤC TRÀ MÃNG CẦU TƯƠI",
+    "priceM": 25000,
+    "priceL": 35000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M099893",
+    "name": "TRÀ ATISO VIỆT QUẤT",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M122515",
+    "name": "TRÀ ATISO NHIỆT ĐỚI",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M368327",
+    "name": "LIPTON CHANH THẠCH DỪA",
+    "priceM": 25000,
+    "priceL": 35000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M481784",
+    "name": "TRÀ ME NHIỆT ĐỚI",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M151036",
+    "name": "TRÀ SỮA TRÂN CHÂU SÚN",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M173625",
+    "name": "TRÀ SỮA LÀI",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M192565",
+    "name": "TRÀ SỮA OLONG",
+    "priceM": 25000,
+    "priceL": 30000,
+    "basePrice": 25000
+  },
+  {
+    "id": "M200702",
+    "name": "TRÀ SỮA MATCHA",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M217229",
+    "name": "TRÀ SỮA CACAO",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M239295",
+    "name": "TRÀ SỮA LÀI HẠT DẺ",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M257427",
+    "name": "CAFE ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 0,
+    "basePrice": 30000
+  },
+  {
+    "id": "M274673",
+    "name": "COOKIE ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 0,
+    "basePrice": 30000
+  },
+  {
+    "id": "M292287",
+    "name": "MATCHA ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M316394",
+    "name": "MATCHA COOKIE ĐÁ XAY",
+    "priceM": 35000,
+    "priceL": 40000,
+    "basePrice": 35000
+  },
+  {
+    "id": "M334342",
+    "name": "CACAO ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M352902",
+    "name": "CACAO COOKIE ĐÁ XAY",
+    "priceM": 35000,
+    "priceL": 40000,
+    "basePrice": 35000
+  },
+  {
+    "id": "M371118",
+    "name": "TRÀ VẢI ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M386110",
+    "name": "TRÀ ĐÀO ĐÁ XAY",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M422842",
+    "name": "SÂM DỨA SỮA",
+    "priceM": 22000,
+    "priceL": 27000,
+    "basePrice": 22000
+  },
+  {
+    "id": "M440994",
+    "name": "SỮA GẠO RANG",
+    "priceM": 22000,
+    "priceL": 27000,
+    "basePrice": 22000
+  },
+  {
+    "id": "M458968",
+    "name": "SỮA TƯƠI TRÂN CHÂU ĐƯỜNG ĐEN",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M478842",
+    "name": "MATCHA LATTE",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M504803",
+    "name": "MATCHA LATTE MACCHIATO",
+    "priceM": 35000,
+    "priceL": 40000,
+    "basePrice": 35000
+  },
+  {
+    "id": "M519363",
+    "name": "CACAO LATTE",
+    "priceM": 30000,
+    "priceL": 35000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M540057",
+    "name": "CACAO LATTE MACCHIATO",
+    "priceM": 35000,
+    "priceL": 40000,
+    "basePrice": 35000
+  },
+  {
+    "id": "M796114",
+    "name": "CHANH TƯƠI",
+    "priceM": 22000,
+    "priceL": 27000,
+    "basePrice": 22000
+  },
+  {
+    "id": "M942138",
+    "name": "CAM TƯƠI",
+    "priceM": 22000,
+    "priceL": 27000,
+    "basePrice": 22000
+  },
+  {
+    "id": "M176424",
+    "name": "SODA VIỆT QUẤT",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M187971",
+    "name": "SODA CHANH",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M200174",
+    "name": "SODA CHANH LEO",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M212799",
+    "name": "SODA BẠC HÀ",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M234372",
+    "name": "SODA BLUESKY",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M250334",
+    "name": "SODA DÂU",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  },
+  {
+    "id": "M323878",
+    "name": "CƠM GÀ XỐI MỠ",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M347189",
+    "name": "MÌ BÒ",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M358460",
+    "name": "MÌ GÀ",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M369828",
+    "name": "NUI BÒ",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M382092",
+    "name": "NUI GÀ",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M396659",
+    "name": "CƠM VĂN PHÒNG",
+    "priceM": 30000,
+    "priceL": 33000,
+    "basePrice": 30000
+  },
+  {
+    "id": "M418975",
+    "name": "CƠM HẢI SẢN",
+    "priceM": 40000,
+    "priceL": 0,
+    "basePrice": 40000
+  },
+  {
+    "id": "M246667",
+    "name": "CƠM BÒ XÀO",
+    "priceM": 35000,
+    "priceL": 0,
+    "basePrice": 35000
+  },
+  {
+    "id": "M747051",
+    "name": "SẠC PIN",
+    "priceM": 15000,
+    "priceL": 0,
+    "basePrice": 15000
+  },
+  {
+    "id": "M400950",
+    "name": "DỌN DẸP",
+    "priceM": 15000,
+    "priceL": 0,
+    "basePrice": 15000
+  },
+  {
+    "id": "PR95C5CFEF11094D26A6D4",
+    "name": "SODA MÂM XÔI",
+    "priceM": 25000,
+    "priceL": 25000,
+    "basePrice": 25000
+  },
+  {
+    "id": "PRE0FAA5E9FE1E412A9344",
+    "name": "SODA",
+    "priceM": 25000,
+    "priceL": 0,
+    "basePrice": 25000
+  }
+]

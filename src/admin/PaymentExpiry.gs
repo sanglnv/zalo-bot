@@ -33,7 +33,10 @@ function scanAndExpireStalePayments() {
       errorLogRepository: SheetErrorLogRepository(),
       now: function () { return new Date(); },
       timeoutMinutes: paymentTimeoutMinutes(),
-      batchLimit: 50
+      batchLimit: 50,
+      resolveFastPath: typeof FastPathPaymentClient === 'undefined' ? null : function (order) {
+        return FastPathPaymentClient.resolve(order.orderId, 'expire', 'system:gas-expiry-scan');
+      }
     }).scan();
   });
 }

@@ -2,6 +2,9 @@
   "name": "telegram-gateway",
   "version": "0.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
@@ -10,6 +13,8 @@
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
+    "catalog:migrate": "wrangler d1 migrations apply zalo-clawbot-catalog",
+    "catalog:import": "node scripts/import-catalog.js",
     "check": "npm run test:run && npm run typecheck && wrangler types --check && wrangler deploy --dry-run"
   },
   "devDependencies": {

@@ -18,6 +18,7 @@ var SystemSetup = (function () {
     ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson']],
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],
     ['ProcessedUpdates', ['updateId', 'processedAt', 'deliveryStatus']],
+    ['FastPathSyncedUpdates', ['updateId', 'syncedAt']],
     ['ZaloProcessedUpdates', ['messageId', 'processedAt', 'deliveryStatus']],
     ['ErrorLogs', ['timestamp', 'context', 'message', 'stack']],
     ['OperationMetrics', ['timestamp', 'operation', 'durationMs']]
@@ -95,6 +96,12 @@ var SystemSetup = (function () {
 })();
 
 function setupProject(options) { return SystemSetup.setupProject(options); }
-function healthCheck() { return SystemSetup.healthCheck(); }
+function healthCheck() {
+  var result = SystemSetup.healthCheck();
+  var output = JSON.stringify(result, null, 2);
+  if (typeof console !== 'undefined' && console.log) console.log(output);
+  else if (typeof Logger !== 'undefined' && Logger.log) Logger.log(output);
+  return result;
+}
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SystemSetup;

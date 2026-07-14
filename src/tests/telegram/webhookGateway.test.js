@@ -69,7 +69,13 @@ test('registerWebhook refuses a direct GAS webhook or missing secret', () => {
 test('router accepts only Telegram requests authenticated by the gateway', () => {
   installUtilities();
   installProperties({ GAS_GATEWAY_TOKEN: 'gas-secret' });
-  global.HtmlService = { createHtmlOutput: (text) => ({ text }) };
+  global.ContentService = {
+    MimeType: { TEXT: 'text/plain' },
+    createTextOutput: (text) => ({
+      text,
+      setMimeType(mimeType) { this.mimeType = mimeType; return this; }
+    })
+  };
   global.recordDuration = (_operation, fn) => fn();
   global.doZaloPost = () => ({ channel: 'zalo' });
   let telegramCalls = 0;
@@ -77,6 +83,8 @@ test('router accepts only Telegram requests authenticated by the gateway', () =>
     telegramCalls += 1;
     return { channel: 'telegram' };
   };
+  const synced = [];
+  global.syncTelegramFastPathSnapshot = (snapshot) => { synced.push(snapshot); };
 
   const valid = webhookRouter.doPost({
     parameter: { platform: 'telegram', gateway_token: 'gas-secret' },
@@ -98,11 +106,19 @@ test('router accepts only Telegram requests authenticated by the gateway', () =>
     },
     postData: { contents: '{}' }
   });
+  const sync = webhookRouter.doPost({
+    parameter: {
+      platform: 'telegram', gateway_token: 'gas-secret', gateway_mode: 'fast_path_sync'
+    },
+    postData: { contents: JSON.stringify({ kind: 'fast_path_sync', updateId: 4 }) }
+  });
 
   assert.deepEqual(valid, { channel: 'telegram' });
-  assert.deepEqual(invalid, { text: 'OK' });
-  assert.deepEqual(direct, { text: 'OK' });
-  assert.deepEqual(probe, { text: 'GATEWAY_OK' });
+  assert.deepEqual(invalid, { text: 'GATEWAY_AUTH_FAILED', mimeType: 'text/plain', setMimeType: invalid.setMimeType });
+  assert.deepEqual(direct, { text: 'OK', mimeType: 'text/plain', setMimeType: direct.setMimeType });
+  assert.deepEqual(probe, { text: 'GATEWAY_OK', mimeType: 'text/plain', setMimeType: probe.setMimeType });
+  assert.deepEqual(sync, { text: 'SYNC_OK', mimeType: 'text/plain', setMimeType: sync.setMimeType });
+  assert.deepEqual(synced, [{ kind: 'fast_path_sync', updateId: 4 }]);
   assert.equal(telegramCalls, 1);
 });
 

@@ -10,8 +10,34 @@
   "compatibility_flags": ["nodejs_compat"],
 
   "vars": {
-    "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev"
+    "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
+    "FAST_PATH_ENABLED": "true",
+    "PAYMENT_TIMEOUT_MINUTES": "30"
   },
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TELEGRAM_SESSIONS",
+        "class_name": "TelegramSession"
+      }
+    ]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "CATALOG_DB",
+      "database_name": "zalo-clawbot-catalog",
+      "database_id": "a31233ab-c2d5-4cc6-875d-2727e1ceb31a"
+    }
+  ],
+
+  "migrations": [
+    {
+      "tag": "telegram-session-v1",
+      "new_sqlite_classes": ["TelegramSession"]
+    }
+  ],
 
   "observability": {
     "enabled": true,
@@ -38,6 +64,10 @@
       {
         "binding": "TELEGRAM_DLQ",
         "queue": "zalo-clawbot-telegram-dlq"
+      },
+      {
+        "binding": "FAST_PATH_SYNC",
+        "queue": "zalo-clawbot-fast-path-sync"
       }
     ],
     "consumers": [
@@ -45,6 +75,15 @@
         "queue": "zalo-clawbot-telegram",
         "max_batch_size": 1,
         "max_batch_timeout": 0,
+        "max_concurrency": 1,
+        "max_retries": 5,
+        "retry_delay": 2,
+        "dead_letter_queue": "zalo-clawbot-telegram-dlq"
+      },
+      {
+        "queue": "zalo-clawbot-fast-path-sync",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
         "max_concurrency": 1,
         "max_retries": 5,
         "retry_delay": 2,
@@ -58,7 +97,9 @@
       "TELEGRAM_WEBHOOK_SECRET",
       "TELEGRAM_BOT_TOKEN",
       "GAS_WEB_APP_URL",
-      "GAS_GATEWAY_TOKEN"
+      "GAS_GATEWAY_TOKEN",
+      "TELEGRAM_OPERATIONS_CHAT_ID",
+      "TELEGRAM_ADMIN_CHAT_IDS"
     ]
   }
 }

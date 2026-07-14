@@ -42,6 +42,23 @@ test('compact callback encoding round-trips and defaults missing quantity to one
   assert.deepEqual(decodeCallbackData('confirm_order'), { action: 'confirm_order' });
   assert.deepEqual(decodeCallbackData('remove_item:p1'), { action: 'remove_item', productId: 'p1' });
   assert.deepEqual(decodeCallbackData('decrease_item:p1'), { action: 'decrease_item', productId: 'p1' });
+  assert.equal(
+    encodeCallbackData({ action: 'select_category', categoryId: 'CAT_CAFE' }),
+    'select_category:CAT_CAFE'
+  );
+  assert.deepEqual(decodeCallbackData('select_category:CAT_CAFE'), {
+    action: 'select_category', categoryId: 'CAT_CAFE'
+  });
+  assert.equal(
+    encodeCallbackData({ action: 'view_product', productId: 'M627869' }),
+    'view_product:M627869'
+  );
+  assert.deepEqual(decodeCallbackData('view_product:M627869'), {
+    action: 'view_product', productId: 'M627869'
+  });
+  assert.deepEqual(decodeCallbackData('admin_category:CAT_TEA'), {
+    action: 'admin_category', categoryId: 'CAT_TEA'
+  });
 });
 
 test('enforces callback_data validation and 64-byte limit', () => {

@@ -23,8 +23,8 @@ test('renders catalog as one inline-keyboard row per product', () => {
   }, 10);
   assert.equal(command.method, 'sendMessage');
   assert.deepEqual(command.params.reply_markup.inline_keyboard, [
-    [{ text: 'Coffee — 35.000 ₫', callback_data: 'add_item:p1:1' }],
-    [{ text: 'Tea — 20.000 ₫', callback_data: 'add_item:p2:1' }]
+    [{ text: 'Coffee — 35.000 ₫', callback_data: 'view_product:p1' }],
+    [{ text: 'Tea — 20.000 ₫', callback_data: 'view_product:p2' }]
   ]);
 });
 
@@ -40,6 +40,24 @@ test('renders action buttons as an inline keyboard', () => {
     { text: 'Confirm', callback_data: 'confirm_order' },
     { text: 'Cancel', callback_data: 'cancel' }
   ]]);
+});
+
+test('renders category navigation below a product list', () => {
+  const command = renderOutboundMessage({
+    type: 'list',
+    content: {
+      title: 'Cà phê',
+      items: [{ productId: 'p1', name: 'Coffee', price: 35000 }],
+      buttons: [
+        { action: 'catalog', label: '← Danh mục' },
+        { action: 'cart', label: 'Giỏ hàng' }
+      ]
+    }
+  }, '10');
+  assert.deepEqual(command.params.reply_markup.inline_keyboard.at(-1), [
+    { text: '← Danh mục', callback_data: 'catalog' },
+    { text: 'Giỏ hàng', callback_data: 'cart' }
+  ]);
 });
 
 test('renders a direct QR URL as sendPhoto', () => {

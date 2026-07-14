@@ -14,6 +14,7 @@ const { renderOutboundMessage } = require('../../adapters/telegram/renderOutboun
 function setup(setupOptions = {}) {
   const fetchCalls = [];
   const errors = [];
+  const telemetry = [];
   const processed = new Map();
   const customers = [];
   const orders = [];
@@ -37,8 +38,11 @@ function setup(setupOptions = {}) {
       return { getResponseCode: () => 200, getContentText: () => '{"ok":true,"result":{}}' };
     }
   };
-  global.HtmlService = {
-    createHtmlOutput(text) { return { text, outputType: 'html' }; }
+  global.ContentService = {
+    MimeType: { TEXT: 'text/plain' },
+    createTextOutput(text) {
+      return { text, setMimeType(mimeType) { this.mimeType = mimeType; return this; } };
+    }
   };
   global.LockService = {
     getScriptLock: () => ({
@@ -84,7 +88,8 @@ function setup(setupOptions = {}) {
     createQrContent: (order) => `https://img.vietqr.io/image/test.png?amount=${order.totalAmount}`,
     createId: () => `id-${++id}`,
     now: () => new Date('2026-07-13T10:00:00.000Z'),
-    withLock: lockSupport.withScriptLock
+    withLock: lockSupport.withScriptLock,
+    telemetry(event, details) { telemetry.push({ event, details }); }
   });
   const orderService = {
     handleMessage(message) { handleCount += 1; return coreService.handleMessage(message); }
@@ -102,14 +107,15 @@ function setup(setupOptions = {}) {
     },
     errorLogRepository: { log(entry) { errors.push(entry); } },
     client: TelegramClient.create(),
-    fallbackMessage: () => 'Processing failed. Please contact support.'
+    fallbackMessage: () => 'Processing failed. Please contact support.',
+    telemetry(event, details) { telemetry.push({ event, details }); }
   });
 
   function post(update) {
     return webhook.doPost({ postData: { contents: JSON.stringify(update) } });
   }
   return {
-    webhook, post, fetchCalls, errors, processed, orders, states,
+    webhook, post, fetchCalls, errors, telemetry, processed, orders, states,
     getHandleCount: () => handleCount
   };
 }
@@ -139,7 +145,7 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
 
   responses.concat(duplicateResponse).forEach((response) => {
     assert.equal(response.text, 'OK');
-    assert.equal(response.outputType, 'html');
+    assert.equal(response.mimeType, 'text/plain');
   });
   assert.equal(f.getHandleCount(), 5, 'duplicate update must not reach OrderService');
   assert.equal(f.orders.length, 1);
@@ -156,6 +162,17 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
   assert.equal(apiCalls.filter((call) => call.method === 'editMessageReplyMarkup').length, 1);
   assert.equal(f.errors.length, 0);
   assert.equal(f.processed.get('104'), 'delivered');
+  const finalTrace = f.telemetry.find((entry) =>
+    entry.event === 'telegram_request_completed' && entry.details.updateId === '104'
+  );
+  assert.ok(finalTrace);
+  assert.ok(finalTrace.details.durationMs >= 0);
+  assert.ok(f.telemetry.some((entry) =>
+    entry.event === 'state_loaded' && entry.details.traceId === '104'
+  ));
+  assert.ok(f.telemetry.some((entry) =>
+    entry.event === 'domain_completed' && entry.details.updateId === '104'
+  ));
 });
 
 test('failed QR delivery sends fallback, marks failed, and logs manual recovery data', () => {
@@ -236,7 +253,7 @@ test('internal errors are logged and webhook still returns success', () => {
   const f = setup();
   const response = f.webhook.doPost({ postData: { contents: '{bad json' } });
   assert.equal(response.text, 'OK');
-  assert.equal(response.outputType, 'html');
+  assert.equal(response.mimeType, 'text/plain');
   assert.equal(f.errors.length, 1);
   assert.match(f.errors[0].message, /JSON/);
 });

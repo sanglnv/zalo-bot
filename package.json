@@ -6,9 +6,10 @@
   "scripts": {
     "test": "node --test src/tests/*.test.js src/tests/telegram/*.test.js src/tests/zalo/*.test.js",
     "check:boundaries": "node scripts/check-core-boundaries.js",
-    "check": "npm run test && npm run check:boundaries"
+    "check": "npm run test && npm run check:boundaries",
+    "latency:report": "node scripts/analyze-latency.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

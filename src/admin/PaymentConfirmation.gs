@@ -14,6 +14,14 @@ function buildPaymentConfirmationOrderService() {
 }
 
 function processOrderPayment(orderId, confirmedBy) {
+  var fastPath = typeof FastPathPaymentClient !== 'undefined'
+    ? FastPathPaymentClient.resolve(orderId, 'confirm', confirmedBy)
+    : { handled: false };
+  if (fastPath.handled) {
+    return fastPath.outcome === 'resolved'
+      ? { ok: true, fastPath: true }
+      : { ok: false, reason: 'already_resolved', fastPath: true };
+  }
   return PaymentConfirmationHandler.create({
     orderService: buildPaymentConfirmationOrderService(),
     dispatchNotifications: NotificationDispatcher.dispatchNotifications,

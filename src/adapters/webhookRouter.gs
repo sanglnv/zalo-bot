@@ -1,5 +1,9 @@
 'use strict';
 
+function gatewayTextResponse(body) {
+  return ContentService.createTextOutput(body).setMimeType(ContentService.MimeType.TEXT);
+}
+
 function secureGatewayTokenEquals(actual, expected) {
   if (!actual || !expected) return false;
   var actualHash = Utilities.computeDigest(
@@ -35,15 +39,23 @@ function routedPostWithoutMetrics(e) {
   var explicit = e && e.parameter && e.parameter.platform;
   if (explicit === 'zalo') return doZaloPost(e);
   if (explicit === 'telegram') {
-    if (!validTelegramGateway(e)) return HtmlService.createHtmlOutput('OK');
-    if (e.parameter.gateway_probe === '1') return HtmlService.createHtmlOutput('GATEWAY_OK');
+    // Apps Script web apps cannot reliably set an HTTP status code. Return a
+    // distinct body so the queue consumer can reject and retry authentication
+    // drift instead of acknowledging and silently losing the update.
+    if (!validTelegramGateway(e)) return gatewayTextResponse('GATEWAY_AUTH_FAILED');
+    if (e.parameter.gateway_probe === '1') return gatewayTextResponse('GATEWAY_OK');
+    if (e.parameter.gateway_mode === 'fast_path_sync') {
+      var snapshot = JSON.parse(e && e.postData ? e.postData.contents : 'null');
+      syncTelegramFastPathSnapshot(snapshot);
+      return gatewayTextResponse('SYNC_OK');
+    }
     return doTelegramPostWithoutMetrics(e);
   }
   try {
     var body = JSON.parse(e && e.postData ? e.postData.contents : 'null');
     if (body && typeof body.event_name === 'string') return doZaloPost(e);
   } catch (ignore) {}
-  return HtmlService.createHtmlOutput('OK');
+  return gatewayTextResponse('OK');
 }
 
 function doPost(e) {

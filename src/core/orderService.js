@@ -75,6 +75,14 @@ function createOrderService(dependencies) {
   ['getCatalog', 'createQrContent', 'createId', 'now', 'withLock'].forEach(function (name) {
     if (typeof dependencies[name] !== 'function') throw new TypeError(name + ' must be a function');
   });
+  var telemetrySink = typeof dependencies.telemetry === 'function'
+    ? dependencies.telemetry
+    : function () {};
+
+  function telemetry(event, details) {
+    try { telemetrySink(event, details); }
+    catch (ignore) {}
+  }
 
   function getOrCreateCustomer(message) {
     var customer = dependencies.customerRepository.findByPlatformUserId(
@@ -204,6 +212,41 @@ function createOrderService(dependencies) {
     return products.filter(function (product) { return product.isAvailable; });
   }
 
+  function catalogCategories(products) {
+    var seen = {};
+    return products.reduce(function (categories, product) {
+      var categoryId = product.categoryId || 'CAT_OTHER';
+      if (seen[categoryId]) return categories;
+      seen[categoryId] = true;
+      categories.push({
+        categoryId: categoryId,
+        categoryName: product.categoryName || categoryId
+      });
+      return categories;
+    }, []);
+  }
+
+  function catalogResponse(products) {
+    if (!products.length) return outbound('button', {
+      text: 'Hôm nay quán đã hết món hoặc đang tạm ngừng bán. Vui lòng quay lại sau.',
+      buttons: [
+        { action: 'status', label: 'Kiểm tra đơn hàng' }
+      ]
+    });
+    var hasCategories = products.some(function (product) { return !!product.categoryId; });
+    if (!hasCategories) return outbound('list', { title: 'Catalog', items: products });
+    return outbound('button', {
+      text: 'Chọn danh mục sản phẩm:',
+      buttons: catalogCategories(products).map(function (category) {
+        return {
+          action: 'select_category',
+          categoryId: category.categoryId,
+          label: category.categoryName
+        };
+      }).concat([{ action: 'cart', label: 'Giỏ hàng' }])
+    });
+  }
+
   function actionOf(message) {
     if (message.payload && typeof message.payload.action === 'string') return message.payload.action;
     var action = message.text.trim().toLowerCase().split(/\s+/)[0] || '';
@@ -216,6 +259,11 @@ function createOrderService(dependencies) {
     d.Domain.validateInboundMessage(message);
     var customer = getOrCreateCustomer(message);
     var state = loadState(customer.customerId);
+    telemetry('state_loaded', {
+      traceId: message.traceId || null,
+      customerId: customer.customerId,
+      currentState: state.currentState
+    });
     var action = actionOf(message);
 
     if (action === 'start' || action === 'help') {
@@ -243,7 +291,60 @@ function createOrderService(dependencies) {
           state.currentState === d.StateMachine.States.EXPIRED) {
         state = startFreshOrder(state);
       }
-      return [outbound('list', { title: 'Catalog', items: catalogItems })];
+      return [catalogResponse(catalogItems)];
+    }
+
+    if (action === 'select_category') {
+      var selectedCategoryId = message.payload && message.payload.categoryId;
+      var categoryProducts = availableCatalog().filter(function (product) {
+        return (product.categoryId || 'CAT_OTHER') === selectedCategoryId;
+      });
+      if (!categoryProducts.length) {
+        throw userError('CATEGORY_EMPTY', 'Danh mục này hiện chưa có sản phẩm.', action, state);
+      }
+      return [outbound('list', {
+        title: categoryProducts[0].categoryName || 'Sản phẩm',
+        items: categoryProducts,
+        buttons: [
+          { action: 'catalog', label: '← Danh mục' },
+          { action: 'cart', label: 'Giỏ hàng' }
+        ]
+      })];
+    }
+
+    if (action === 'view_product') {
+      var viewedProductId = message.payload && message.payload.productId;
+      var viewedProduct = availableCatalog().find(function (item) {
+        return item.productId === viewedProductId;
+      });
+      if (!viewedProduct) {
+        throw userError(
+          'PRODUCT_UNAVAILABLE', 'Món này đã hết hoặc hiện đang tạm ngừng bán.', action, state
+        );
+      }
+      var pendingForProduct = pendingOrder(state, customer);
+      if (pendingForProduct) return pendingOrderResponse(pendingForProduct);
+      if (state.currentState !== d.StateMachine.States.BROWSING &&
+          state.currentState !== d.StateMachine.States.CART &&
+          state.currentState !== d.StateMachine.States.CONFIRMING) {
+        throw userError('INVALID_FLOW', 'Hãy mở catalog trước khi chọn sản phẩm.', action, state);
+      }
+      return [outbound('button', {
+        text: viewedProduct.name + '\n' + formatMoney(viewedProduct.price) +
+          '\n\nChọn số lượng muốn thêm vào giỏ:',
+        buttons: [
+          { action: 'add_item', productId: viewedProduct.productId, quantity: 1, label: 'Thêm 1' },
+          { action: 'add_item', productId: viewedProduct.productId, quantity: 2, label: 'Thêm 2' },
+          { action: 'add_item', productId: viewedProduct.productId, quantity: 3, label: 'Thêm 3' },
+          { action: 'add_item', productId: viewedProduct.productId, quantity: 5, label: 'Thêm 5' },
+          {
+            action: 'select_category',
+            categoryId: viewedProduct.categoryId || 'CAT_OTHER',
+            label: '← Sản phẩm'
+          },
+          { action: 'cart', label: 'Giỏ hàng' }
+        ]
+      })];
     }
 
     if (action === 'new_order') {
@@ -257,7 +358,7 @@ function createOrderService(dependencies) {
       }
       var newOrderCatalog = availableCatalog();
       state = startFreshOrder(state);
-      return [outbound('list', { title: 'Catalog', items: newOrderCatalog })];
+      return [catalogResponse(newOrderCatalog)];
     }
 
     if (action === 'add_item') {
@@ -268,7 +369,7 @@ function createOrderService(dependencies) {
       }
       var product = availableCatalog().find(function (item) { return item.productId === productId; });
       if (!product) throw userError(
-        'PRODUCT_UNAVAILABLE', 'Sản phẩm không tồn tại hoặc hiện không còn bán.', action, state
+        'PRODUCT_UNAVAILABLE', 'Món này đã hết hoặc hiện đang tạm ngừng bán.', action, state
       );
       if (state.currentState !== d.StateMachine.States.BROWSING &&
           state.currentState !== d.StateMachine.States.CART &&

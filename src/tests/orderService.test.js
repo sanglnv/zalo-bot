@@ -42,7 +42,7 @@ function fixture(options = {}) {
     orderRepository,
     customerRepository,
     conversationStateRepository,
-    getCatalog: () => [
+    getCatalog: () => options.catalog || [
       { productId: 'p1', name: 'House coffee', price: 35_000, isAvailable: true },
       { productId: 'p2', name: 'Green tea', price: 20_000, isAvailable: true },
       { productId: 'p3', name: 'Unavailable item', price: 1, isAvailable: false }
@@ -78,6 +78,34 @@ test('catalog, cart, checkout, confirmation, and payment QR flow', () => {
   assert.equal(f.orders.length, 1);
   assert.equal(f.orders[0].status, 'AWAITING_PAYMENT');
   assert.equal([...f.states.values()][0].currentState, 'AWAITING_PAYMENT');
+});
+
+test('category catalog shows groups before products and preserves navigation', () => {
+  const f = fixture({ catalog: [
+    { productId: 'c1', name: 'Coffee', price: 35000, isAvailable: true,
+      categoryId: 'CAT_CAFE', categoryName: 'Cà phê' },
+    { productId: 't1', name: 'Tea', price: 25000, isAvailable: true,
+      categoryId: 'CAT_TEA', categoryName: 'Trà trái cây' }
+  ] });
+  const categories = f.send('catalog')[0];
+  assert.equal(categories.type, 'button');
+  assert.deepEqual(categories.content.buttons.map((button) => button.label), [
+    'Cà phê', 'Trà trái cây', 'Giỏ hàng'
+  ]);
+  const products = f.send('', { action: 'select_category', categoryId: 'CAT_TEA' })[0];
+  assert.deepEqual(products.content.items.map((item) => item.productId), ['t1']);
+  assert.deepEqual(products.content.buttons.map((button) => button.action), ['catalog', 'cart']);
+
+  const product = f.send('', { action: 'view_product', productId: 't1' })[0];
+  assert.equal(product.type, 'button');
+  assert.match(product.content.text, /Tea/);
+  assert.match(product.content.text, /25\.000 ₫/);
+  assert.deepEqual(product.content.buttons.map((button) => button.label), [
+    'Thêm 1', 'Thêm 2', 'Thêm 3', 'Thêm 5', '← Sản phẩm', 'Giỏ hàng'
+  ]);
+  assert.deepEqual(product.content.buttons[2], {
+    action: 'add_item', productId: 't1', quantity: 3, label: 'Thêm 3'
+  });
 });
 
 test('adds two different products and keeps both in the cart through checkout', () => {

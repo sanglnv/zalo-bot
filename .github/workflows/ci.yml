@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: telegram-gateway/package-lock.json
+      - name: Verify core and GAS adapters
+        run: npm run check
+      - name: Install gateway dependencies
+        working-directory: telegram-gateway
+        run: npm ci
+      - name: Test gateway
+        working-directory: telegram-gateway
+        env:
+          TELEGRAM_WEBHOOK_SECRET: ci-test
+          TELEGRAM_BOT_TOKEN: ci-test
+          GAS_WEB_APP_URL: https://example.com
+          GAS_GATEWAY_TOKEN: ci-test
+          TELEGRAM_OPERATIONS_CHAT_ID: ci-test
+        run: npm run test:run
+      - name: Type-check gateway
+        working-directory: telegram-gateway
+        run: npm run typecheck

@@ -6,6 +6,12 @@ Cloudflare Worker này là ingress production bắt buộc giữa Telegram và G
 
 Worker kiểm tra `X-Telegram-Bot-Api-Secret-Token`, dừng callback spinner ở edge, ghi update vào Queue trước khi trả `200`, rồi consumer chuyển tiếp tới GAS. Delivery lỗi được retry với backoff và cuối cùng đi vào DLQ. Cron mỗi 5 phút ghi structured error log nếu DLQ có backlog, gọi Telegram `getWebhookInfo`, tự sửa URL drift bằng `setWebhook` mà không xoá pending updates, và probe token Worker→GAS.
 
+Phase 2 có fast path thử nghiệm dùng SQLite Durable Object theo từng Telegram chat để xử lý nghiệp vụ và gửi phản hồi ngay tại Worker. Tính năng này tắt mặc định và chỉ áp dụng khi chat đồng thời nằm trong allowlist. Xem [runbook Phase 2](../docs/telegram-fast-path-phase2.md); không dùng tài khoản pilot cho đơn/thanh toán thật trước khi dữ liệu được mirror về Sheets.
+
+Phase 3 lưu catalog lớn trong D1 và đẩy snapshot fast path qua Queue để GAS upsert về Sheets mà không chặn phản hồi khách hàng. Xem [runbook Phase 3](../docs/telegram-fast-path-phase3.md).
+
+Phase 4 chuyển xác nhận thanh toán và hết hạn đơn fast path vào đúng Durable Object theo chat, dùng alarm và notification outbox để giữ trạng thái/notification nhất quán. Xem [runbook Phase 4](../docs/telegram-fast-path-phase4.md).
+
 ## Local verification
 
 ```sh
@@ -31,12 +37,14 @@ npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put GAS_WEB_APP_URL
 npx wrangler secret put GAS_GATEWAY_TOKEN
+npx wrangler secret put TELEGRAM_OPERATIONS_CHAT_ID
 ```
 
 - `GAS_WEB_APP_URL`: Apps Script production `/exec` URL.
 - `TELEGRAM_WEBHOOK_SECRET`: chuỗi ngẫu nhiên 1–256 ký tự chỉ gồm `A-Z`, `a-z`, `0-9`, `_`, `-`; dùng cùng giá trị cho Script Property tương ứng.
 - `GAS_GATEWAY_TOKEN`: secret ngẫu nhiên khác, dùng cùng giá trị cho Script Property tương ứng.
 - `TELEGRAM_BOT_TOKEN`: token BotFather.
+- `TELEGRAM_OPERATIONS_CHAT_ID`: private staff chat receiving DLQ alerts. Add the bot to this chat before deployment.
 
 Deploy và lưu URL `workers.dev` được Wrangler trả về:
 
@@ -52,7 +60,7 @@ npm run deploy
 1. Chạy GAS `healthCheck()` và xác nhận `telegramWebhook.status === "ok"`, `url === expectedUrl`, `pendingUpdates === 0`, không có lỗi webhook mới.
 2. Gửi `/start`, `catalog`, thêm sản phẩm và bấm callback trên Telegram. Callback phải hết spinner ngay; bot phải trả lời đúng một lần.
 3. Trong Cloudflare Workers Logs, xác nhận `telegram_webhook_healthy`, `gas_gateway_healthy`, rồi xác nhận `telegram_update_queued` và `telegram_update_forwarded` có cùng `updateId` khi test chat.
-4. Theo dõi `telegram_dlq_not_empty`. Nếu xuất hiện, tra `updateId` trong logs và xử lý nguyên nhân GAS trước khi replay thủ công; không tạo consumer tự xoá DLQ.
+4. Theo dõi `telegram_dlq_not_empty`; staff chat cũng nhận cảnh báo chủ động. Nếu xuất hiện, tra `updateId` trong logs và xử lý nguyên nhân GAS trước khi replay thủ công; không tạo consumer tự xoá DLQ.
 
 Probe không cần secret:
 
@@ -71,4 +79,20 @@ npx wrangler queues list
 npx wrangler tail
 ```
 
-Workers observability lưu invocation logs, structured application logs và traces 5%. `PUBLIC_WEBHOOK_URL` trong `wrangler.jsonc` là URL public không nhạy cảm dùng để đối chiếu `getWebhookInfo`. DLQ không có consumer chủ động để giữ message cho điều tra; cron chỉ đọc realtime metrics và cảnh báo backlog.
+Workers observability lưu invocation logs, structured application logs và traces 5%. `PUBLIC_WEBHOOK_URL` trong `wrangler.jsonc` là URL public không nhạy cảm dùng để đối chiếu `getWebhookInfo`. DLQ không có consumer chủ động để giữ message cho điều tra; cron đọc realtime metrics, ghi log và gửi cảnh báo Telegram.
+
+### DLQ recovery runbook
+
+Cloudflare giữ message trong DLQ không có consumer trong 4 ngày. Khi nhận cảnh báo:
+
+1. Xác định và sửa nguyên nhân trước, đặc biệt là `GATEWAY_AUTH_FAILED`, GAS timeout hoặc deployment URL sai.
+2. Dùng Cloudflare dashboard để xem từng message và `update_id`; đối chiếu với `ProcessedUpdates` trong Sheets.
+3. Chỉ replay message chưa có record hoặc đang `pending`/`failed`. Idempotency ở GAS sẽ bỏ qua update đã xử lý.
+4. Gửi lại vào queue chính theo thứ tự tăng dần của `update_id`, mỗi lần một message; xác nhận log `telegram_update_forwarded` trước message tiếp theo.
+5. Không gắn consumer tự động vào DLQ: replay khi nguyên nhân chưa được sửa sẽ làm mất cửa sổ điều tra và tạo vòng lặp lỗi.
+
+## Capacity guardrail
+
+GAS dùng một script-wide lock để giữ mutation trên Sheets atomic giữa Telegram, Zalo, staff confirmation và expiry. Worker vì thế cố ý đặt `max_concurrency: 1`. Runtime ghi structured warning `script_lock_contention` khi chờ lock từ 1 giây trở lên.
+
+Lập kế hoạch chuyển Orders, Customers và ConversationStates sang datastore có transaction/keyed concurrency khi p95 `doPost` vượt 5 giây, xuất hiện lock wait từ 1 giây trong giờ bình thường, hoặc queue age tăng liên tục. Không tăng `max_concurrency` trước migration vì chỉ chuyển backlog từ Queue sang GAS lock contention.

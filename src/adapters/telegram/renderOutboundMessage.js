@@ -9,6 +9,7 @@ function telegramRendererDependencies() {
 function buttonPayload(button) {
   var payload = { action: button.action };
   if (button.productId != null) payload.productId = button.productId;
+  if (button.categoryId != null) payload.categoryId = button.categoryId;
   if (button.quantity != null) payload.quantity = button.quantity;
   return payload;
 }
@@ -45,10 +46,15 @@ function renderOutboundMessage(message, chatId) {
             return [{
               text: product.name + ' — ' + formatPrice(product.price),
               callback_data: telegramRendererDependencies().encodeCallbackData({
-                action: 'add_item', productId: product.productId, quantity: 1
+                action: 'view_product', productId: product.productId
               })
             }];
-          })
+          }).concat(Array.isArray(content.buttons) ? [content.buttons.map(function (button) {
+            return {
+              text: button.label,
+              callback_data: telegramRendererDependencies().encodeCallbackData(buttonPayload(button))
+            };
+          })] : [])
         }
       }
     };

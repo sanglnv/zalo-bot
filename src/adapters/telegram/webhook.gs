@@ -2,7 +2,7 @@
 
 var TelegramWebhook = (function () {
   function successResponse() {
-    return HtmlService.createHtmlOutput('OK');
+    return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
   }
 
   function requireUpdateId(update) {
@@ -37,6 +37,20 @@ var TelegramWebhook = (function () {
     }
     if (typeof dependencies.fallbackMessage !== 'function') {
       throw new TypeError('fallbackMessage must be a function');
+    }
+    var telemetry = typeof dependencies.telemetry === 'function'
+      ? dependencies.telemetry
+      : function () {};
+
+    function emitTelemetry(event, updateId, startedAtMs, details) {
+      var nowMs = Date.now();
+      try {
+        telemetry(event, Object.assign({
+          updateId: updateId,
+          timestampMs: nowMs,
+          durationMs: startedAtMs == null ? null : Math.max(0, nowMs - startedAtMs)
+        }, details || {}));
+      } catch (ignore) {}
     }
 
     function logError(error, context) {
@@ -170,6 +184,7 @@ var TelegramWebhook = (function () {
     }
 
     function doPost(event) {
+      var gasReceivedAtMs = Date.now();
       var update = null;
       var updateId = null;
       var chatId = null;
@@ -181,8 +196,15 @@ var TelegramWebhook = (function () {
         }
         update = JSON.parse(event.postData.contents);
         updateId = requireUpdateId(update);
+        emitTelemetry('gas_received', updateId, null, {
+          gasReceivedAtMs: gasReceivedAtMs,
+          edgeToGasMs: update._gateway_trace && update._gateway_trace.receivedAtMs
+            ? Math.max(0, gasReceivedAtMs - update._gateway_trace.receivedAtMs)
+            : null
+        });
         chatId = rawChatId(update);
         answerCallback(update, updateId);
+        var transactionStartedAtMs = Date.now();
         transaction = dependencies.withLock(function () {
           if (dependencies.processedUpdateRepository.has(updateId)) {
             return { duplicate: true, commands: [] };
@@ -191,13 +213,23 @@ var TelegramWebhook = (function () {
           claimed = true;
           var inbound = dependencies.mapInboundMessage(update);
           if (!inbound) return { ignored: true, commands: [] };
+          inbound.traceId = updateId;
+          var domainStartedAtMs = Date.now();
+          emitTelemetry('domain_started', updateId, null, { timestampMs: domainStartedAtMs });
           var outbound = dependencies.orderService.handleMessage(inbound);
+          emitTelemetry('domain_completed', updateId, domainStartedAtMs, {
+            outboundCount: outbound.length
+          });
           return {
             recovery: recoveryFrom(outbound, inbound.platformUserId),
             commands: outbound.map(function (message) {
               return dependencies.renderOutboundMessage(message, inbound.platformUserId);
             })
           };
+        });
+        emitTelemetry('transaction_completed', updateId, transactionStartedAtMs, {
+          duplicate: transaction.duplicate === true,
+          commandCount: transaction.commands.length
         });
 
         if (transaction.duplicate) {
@@ -206,7 +238,16 @@ var TelegramWebhook = (function () {
         for (var index = 0; index < transaction.commands.length; index += 1) {
           var command = transaction.commands[index];
           try {
+            var deliveryStartedAtMs = Date.now();
+            emitTelemetry('telegram_send_started', updateId, null, {
+              commandIndex: index,
+              method: command.method
+            });
             dependencies.client.execute(command);
+            emitTelemetry('telegram_send_completed', updateId, deliveryStartedAtMs, {
+              commandIndex: index,
+              method: command.method
+            });
           } catch (error) {
             handleProcessingFailure(error, {
               claimed: claimed,
@@ -221,6 +262,9 @@ var TelegramWebhook = (function () {
         }
         updateDeliveryStatus(updateId, 'delivered');
         clearCompletedCallbackKeyboard(update, updateId);
+        emitTelemetry('telegram_request_completed', updateId, gasReceivedAtMs, {
+          commandCount: transaction.commands.length
+        });
       } catch (error) {
         if (error && error.customerMessage) {
           handleUserActionFailure(error, {
@@ -250,6 +294,15 @@ var TelegramWebhook = (function () {
 var telegramWebhookInstance = null;
 
 function createDefaultTelegramWebhook() {
+  function structuredTelemetry(event, details) {
+    if (typeof console !== 'undefined' && console.log) {
+      console.log(JSON.stringify(Object.assign({
+        event: event,
+        platform: 'telegram',
+        timestampMs: Date.now()
+      }, details || {})));
+    }
+  }
   var orderService = OrderService.create({
     orderRepository: SheetOrderRepository(),
     customerRepository: SheetCustomerRepository(),
@@ -258,7 +311,8 @@ function createDefaultTelegramWebhook() {
     createQrContent: TelegramRuntime.createPaymentQrUrl,
     createId: TelegramRuntime.createId,
     now: function () { return new Date(); },
-    withLock: SheetRepositorySupport.withScriptLock
+    withLock: SheetRepositorySupport.withScriptLock,
+    telemetry: structuredTelemetry
   });
   return TelegramWebhook.create({
     mapInboundMessage: TelegramInboundMapper.mapInboundMessage,
@@ -269,7 +323,8 @@ function createDefaultTelegramWebhook() {
     processedUpdateRepository: SheetProcessedUpdateRepository(),
     errorLogRepository: SheetErrorLogRepository(),
     client: TelegramClient.create(),
-    fallbackMessage: TelegramRuntime.fallbackMessage
+    fallbackMessage: TelegramRuntime.fallbackMessage,
+    telemetry: structuredTelemetry
   });
 }
 
@@ -288,7 +343,7 @@ function doTelegramPostWithoutMetrics(e) {
     } catch (loggingError) {
       if (typeof console !== 'undefined' && console.error) console.error(loggingError);
     }
-    return HtmlService.createHtmlOutput('OK');
+    return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
   }
 }
 

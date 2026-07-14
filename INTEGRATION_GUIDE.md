@@ -96,7 +96,7 @@ clasp push
 Sau đó:
 
 1. Deploy → New deployment → Web app (Execute as deploying user, Anyone access), copy URL `/exec` vào `WEB_APP_URL`.
-2. Vào `telegram-gateway/`, tạo 2 Cloudflare Queue `zalo-clawbot-telegram` và `zalo-clawbot-telegram-dlq`, cấu hình 4 Worker secret theo `telegram-gateway/README.md`, rồi chạy `npm run check` và `npm run deploy`.
+2. Vào `telegram-gateway/`, tạo 2 Cloudflare Queue `zalo-clawbot-telegram` và `zalo-clawbot-telegram-dlq`, cấu hình 5 Worker secret theo `telegram-gateway/README.md` (bao gồm `TELEGRAM_OPERATIONS_CHAT_ID` để nhận cảnh báo DLQ), rồi chạy `npm run check` và `npm run deploy`.
 3. Copy URL Worker vào Script Property `TELEGRAM_WEBHOOK_URL`. `TELEGRAM_WEBHOOK_SECRET` và `GAS_GATEWAY_TOKEN` phải khớp theo từng cặp giữa GAS và Worker; đây là 2 secret khác nhau.
 4. Push/deploy GAS mới nhất, chạy `setupProject()` hoặc `registerWebhook(false)` 1 lần trong Apps Script editor.
 5. Chạy `healthCheck()`: `telegramWebhook.status` phải là `ok`, `url === expectedUrl`, queue chờ bằng 0 và không có `lastErrorMessage` mới.
