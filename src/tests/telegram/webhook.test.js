@@ -1,0 +1,228 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+require.extensions['.gs'] = require.extensions['.js'];
+
+const OrderService = require('../../core/orderService');
+const TelegramClient = require('../../adapters/telegram/TelegramClient.gs');
+const { TelegramWebhook } = require('../../adapters/telegram/webhook.gs');
+const { mapInboundMessage } = require('../../adapters/telegram/mapInboundMessage');
+const { renderOutboundMessage } = require('../../adapters/telegram/renderOutboundMessage');
+
+function setup(setupOptions = {}) {
+  const fetchCalls = [];
+  const errors = [];
+  const processed = new Map();
+  const customers = [];
+  const orders = [];
+  const states = new Map();
+  let lockHeld = false;
+  let id = 0;
+  let handleCount = 0;
+
+  global.PropertiesService = {
+    getScriptProperties: () => ({
+      getProperty: (name) => name === 'TELEGRAM_BOT_TOKEN' ? 'test-token' : null
+    })
+  };
+  global.UrlFetchApp = {
+    fetch(url, options) {
+      const method = url.slice(url.lastIndexOf('/') + 1);
+      fetchCalls.push({ url, options, params: JSON.parse(options.payload) });
+      if (method === setupOptions.failMethod) {
+        return { getResponseCode: () => 500, getContentText: () => '{"ok":false,"description":"forced"}' };
+      }
+      return { getResponseCode: () => 200, getContentText: () => '{"ok":true,"result":{}}' };
+    }
+  };
+  global.ContentService = {
+    MimeType: { TEXT: 'text/plain' },
+    createTextOutput(text) {
+      return {
+        text,
+        mimeType: null,
+        setMimeType(value) { this.mimeType = value; return this; }
+      };
+    }
+  };
+  global.LockService = {
+    getScriptLock: () => ({
+      hasLock: () => lockHeld,
+      tryLock: () => { if (lockHeld) return false; lockHeld = true; return true; },
+      releaseLock: () => { lockHeld = false; }
+    })
+  };
+  delete require.cache[require.resolve('../../repositories/SheetRepositorySupport.gs')];
+  const lockSupport = require('../../repositories/SheetRepositorySupport.gs');
+
+  const orderRepository = {
+    save(order) { orders.push(structuredClone(order)); return order; },
+    findById(orderId) { return orders.find((order) => order.orderId === orderId) || null; },
+    findByCustomerId(customerId) { return orders.filter((order) => order.customerId === customerId); },
+    updateStatus(orderId, status) {
+      const order = orders.find((candidate) => candidate.orderId === orderId);
+      if (!order) throw new Error('Order not found');
+      order.status = status;
+    }
+  };
+  const customerRepository = {
+    save(customer) { customers.push(structuredClone(customer)); return customer; },
+    findById(customerId) { return customers.find((customer) => customer.customerId === customerId) || null; },
+    findByPlatformUserId(platform, platformUserId) {
+      return customers.find((customer) => customer.platformLinks.some(
+        (link) => link.platform === platform && link.platformUserId === platformUserId
+      )) || null;
+    }
+  };
+  const conversationStateRepository = {
+    get(customerId) { return states.has(customerId) ? structuredClone(states.get(customerId)) : null; },
+    set(customerId, state) { states.set(customerId, structuredClone(state)); return state; }
+  };
+  const coreService = OrderService.create({
+    orderRepository,
+    customerRepository,
+    conversationStateRepository,
+    getCatalog: () => [
+      { productId: 'p1', name: 'Coffee', price: 35_000, isAvailable: true },
+      { productId: 'p2', name: 'Tea', price: 20_000, isAvailable: true }
+    ],
+    createQrContent: (order) => `https://img.vietqr.io/image/test.png?amount=${order.totalAmount}`,
+    createId: () => `id-${++id}`,
+    now: () => new Date('2026-07-13T10:00:00.000Z'),
+    withLock: lockSupport.withScriptLock
+  });
+  const orderService = {
+    handleMessage(message) { handleCount += 1; return coreService.handleMessage(message); }
+  };
+  const webhook = TelegramWebhook.create({
+    mapInboundMessage,
+    renderOutboundMessage,
+    withLock: lockSupport.withScriptLock,
+    now: () => new Date('2026-07-13T10:00:00.000Z'),
+    orderService,
+    processedUpdateRepository: {
+      has: (updateId) => processed.has(String(updateId)),
+      markProcessed(updateId) { processed.set(String(updateId), 'pending'); return true; },
+      updateDeliveryStatus(updateId, status) { processed.set(String(updateId), status); return status; }
+    },
+    errorLogRepository: { log(entry) { errors.push(entry); } },
+    client: TelegramClient.create(),
+    fallbackMessage: () => 'Processing failed. Please contact support.'
+  });
+
+  function post(update) {
+    return webhook.doPost({ postData: { contents: JSON.stringify(update) } });
+  }
+  return {
+    webhook, post, fetchCalls, errors, processed, orders, states,
+    getHandleCount: () => handleCount
+  };
+}
+
+function message(updateId, text) {
+  return { update_id: updateId, message: { message_id: updateId, chat: { id: 777 }, text } };
+}
+
+function callback(updateId, id, data) {
+  return {
+    update_id: updateId,
+    callback_query: { id, data, message: { message_id: 1, chat: { id: 777 } } }
+  };
+}
+
+test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update id', () => {
+  const f = setup();
+  const updates = [
+    message(100, 'catalog'),
+    callback(101, 'cb-add-1', 'add_item:p1:1'),
+    callback(102, 'cb-add-2', 'add_item:p2:1'),
+    message(103, 'checkout'),
+    callback(104, 'cb-confirm', 'confirm_order')
+  ];
+  const responses = updates.map(f.post);
+  const duplicateResponse = f.post(updates[4]);
+
+  responses.concat(duplicateResponse).forEach((response) => {
+    assert.equal(response.text, 'OK');
+    assert.equal(response.mimeType, 'text/plain');
+  });
+  assert.equal(f.getHandleCount(), 5, 'duplicate update must not reach OrderService');
+  assert.equal(f.orders.length, 1);
+  assert.deepEqual(f.orders[0].items.map((item) => item.productId), ['p1', 'p2']);
+
+  const apiCalls = f.fetchCalls.map((call) => ({
+    method: call.url.slice(call.url.lastIndexOf('/') + 1), params: call.params
+  }));
+  const photoCalls = apiCalls.filter((call) => call.method === 'sendPhoto');
+  assert.equal(photoCalls.length, 1, 'duplicate confirmation must not send another QR');
+  assert.match(photoCalls[0].params.photo, /^https:\/\/img\.vietqr\.io\/image\//);
+  assert.equal(photoCalls[0].params.chat_id, '777');
+  assert.equal(apiCalls.filter((call) => call.method === 'answerCallbackQuery').length, 4);
+  assert.equal(f.errors.length, 0);
+  assert.equal(f.processed.get('104'), 'delivered');
+});
+
+test('failed QR delivery sends fallback, marks failed, and logs manual recovery data', () => {
+  const options = {};
+  const f = setup(options);
+  f.post(message(300, 'catalog'));
+  f.post(callback(301, 'cb-add', 'add_item:p1:1'));
+  f.post(message(302, 'checkout'));
+
+  options.failMethod = 'sendPhoto';
+  const response = f.post(callback(303, 'cb-confirm-failed', 'confirm_order'));
+  assert.equal(response.text, 'OK');
+  assert.equal(f.orders.length, 1, 'business order is already committed');
+  assert.equal(f.processed.get('303'), 'failed');
+
+  const apiCalls = f.fetchCalls.map((call) => ({
+    method: call.url.slice(call.url.lastIndexOf('/') + 1), params: call.params
+  }));
+  const fallback = apiCalls.find((call) =>
+    call.method === 'sendMessage' && call.params.text === 'Processing failed. Please contact support.'
+  );
+  assert.ok(fallback, 'customer must receive a fallback after QR delivery failure');
+  assert.equal(fallback.params.chat_id, '777');
+
+  const deliveryLog = f.errors.find((entry) => entry.context.stage === 'delivery');
+  assert.ok(deliveryLog);
+  assert.equal(deliveryLog.context.orderId, 'id-2');
+  assert.equal(deliveryLog.context.chatId, '777');
+  assert.match(deliveryLog.context.qrUrl, /^https:\/\/img\.vietqr\.io\/image\//);
+  assert.equal(deliveryLog.context.failedMethod, 'sendPhoto');
+  assert.equal(deliveryLog.context.fallbackDelivered, true);
+
+  // Re-confirming cannot repeat the financial transition, but it must still
+  // produce a visible fallback instead of failing silently.
+  const fallbackCount = () => f.fetchCalls.filter((call) =>
+    call.url.endsWith('/sendMessage') &&
+    call.params.text === 'Processing failed. Please contact support.'
+  ).length;
+  const beforeRetry = fallbackCount();
+  const retryResponse = f.post(callback(304, 'cb-confirm-retry', 'confirm_order'));
+  assert.equal(retryResponse.text, 'OK');
+  assert.equal(f.orders.length, 1);
+  assert.equal(f.processed.get('304'), 'failed');
+  assert.equal(fallbackCount(), beforeRetry + 1);
+});
+
+test('unsupported update is claimed but does not call core or Telegram API', () => {
+  const f = setup();
+  const response = f.post({ update_id: 200, edited_message: {} });
+  assert.equal(response.text, 'OK');
+  assert.equal(f.getHandleCount(), 0);
+  assert.equal(f.fetchCalls.length, 0);
+  assert.equal(f.processed.has('200'), true);
+  assert.equal(f.processed.get('200'), 'delivered');
+});
+
+test('internal errors are logged and webhook still returns success', () => {
+  const f = setup();
+  const response = f.webhook.doPost({ postData: { contents: '{bad json' } });
+  assert.equal(response.text, 'OK');
+  assert.equal(response.mimeType, 'text/plain');
+  assert.equal(f.errors.length, 1);
+  assert.match(f.errors[0].message, /JSON/);
+});

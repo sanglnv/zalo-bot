@@ -1,0 +1,12 @@
+**/**
+!appsscript.json
+!src/core/**/*.js
+!src/repositories/**/*.gs
+!src/adapters/telegram/**/*.js
+!src/adapters/telegram/**/*.gs
+!src/adapters/zalo/**/*.js
+!src/adapters/zalo/**/*.gs
+!src/adapters/*.js
+!src/adapters/*.gs
+!src/admin/**/*.js
+!src/admin/**/*.gs

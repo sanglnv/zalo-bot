@@ -1,0 +1,14 @@
+{
+  "name": "zalo-clawbot-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-agnostic ordering domain for Google Apps Script",
+  "scripts": {
+    "test": "node --test src/tests/*.test.js src/tests/telegram/*.test.js src/tests/zalo/*.test.js",
+    "check:boundaries": "node scripts/check-core-boundaries.js",
+    "check": "npm run test && npm run check:boundaries"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

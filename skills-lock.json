@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "zalo-mini-app": {
+      "source": "suminhthanh/zalo-mini-app-skills",
+      "sourceType": "github",
+      "skillPath": "skills/zalo-mini-app/SKILL.md",
+      "computedHash": "5daec57a6ade0e4f3d315bc30aad61b02b7af5ec797ccf2b2059426470d385fa"
+    }
+  }
+}

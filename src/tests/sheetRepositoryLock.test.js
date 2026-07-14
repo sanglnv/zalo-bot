@@ -1,0 +1,112 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+require.extensions['.gs'] = require.extensions['.js'];
+
+function makeRuntime(onAppend) {
+  let locked = false;
+  const rows = [];
+  const sheet = {
+    getLastRow: () => rows.length,
+    getLastColumn: () => rows.length ? rows[0].length : 0,
+    appendRow(row) { rows.push([...row]); if (onAppend) onAppend(row); },
+    getRange(row, column, rowCount, columnCount) {
+      return {
+        getValues() {
+          return rows.slice(row - 1, row - 1 + rowCount)
+            .map((source) => source.slice(column - 1, column - 1 + columnCount));
+        },
+        setValues(values) {
+          values.forEach((value, offset) => { rows[row - 1 + offset] = [...value]; });
+        },
+        getValue() { return rows[row - 1] && rows[row - 1][column - 1]; },
+        setValue(value) { rows[row - 1][column - 1] = value; }
+      };
+    }
+  };
+  const book = {
+    getSheetByName: () => rows.length ? sheet : null,
+    insertSheet: () => sheet
+  };
+  const metrics = { acquisitions: 0, rejected: 0, releases: 0 };
+  global.PropertiesService = {
+    getScriptProperties: () => ({ getProperty: (name) => name === 'SPREADSHEET_ID' ? 'sheet-id' : null })
+  };
+  global.SpreadsheetApp = { openById: () => book };
+  global.LockService = {
+    getScriptLock: () => ({
+      tryLock() {
+        if (locked) { metrics.rejected += 1; return false; }
+        locked = true;
+        metrics.acquisitions += 1;
+        return true;
+      },
+      releaseLock() { locked = false; metrics.releases += 1; }
+    })
+  };
+  return { rows, metrics };
+}
+
+function order(id) {
+  return {
+    orderId: id, customerId: 'customer-1', items: [], status: 'AWAITING_PAYMENT',
+    totalAmount: 10, createdAt: '2026-07-13T00:00:00.000Z', updatedAt: '2026-07-13T00:00:00.000Z'
+  };
+}
+
+test('script lock rejects an overlapping order write and releases for a retry', () => {
+  delete require.cache[require.resolve('../repositories/SheetRepositorySupport.gs')];
+  delete require.cache[require.resolve('../repositories/SheetOrderRepository.gs')];
+
+  let firstRepository;
+  let secondRepository;
+  let firstExecutionSupport;
+  let secondExecutionSupport;
+  let overlapError;
+  const runtime = makeRuntime((row) => {
+    if (row[0] === 'order-a') {
+      // A separate GAS execution has separate module globals/lock depth, while
+      // both executions contend for the same underlying script lock.
+      global.SheetRepositorySupport = secondExecutionSupport;
+      try { secondRepository.save(order('order-b')); } catch (error) { overlapError = error; }
+      finally { global.SheetRepositorySupport = firstExecutionSupport; }
+    }
+  });
+  firstExecutionSupport = require('../repositories/SheetRepositorySupport.gs');
+  delete require.cache[require.resolve('../repositories/SheetRepositorySupport.gs')];
+  secondExecutionSupport = require('../repositories/SheetRepositorySupport.gs');
+  global.SheetRepositorySupport = firstExecutionSupport;
+  const SheetOrderRepository = require('../repositories/SheetOrderRepository.gs');
+  firstRepository = SheetOrderRepository();
+  secondRepository = SheetOrderRepository();
+
+  firstRepository.save(order('order-a'));
+  assert.match(overlapError.message, /Could not acquire script lock/);
+  assert.equal(runtime.metrics.rejected, 1);
+  assert.equal(runtime.metrics.acquisitions, 1);
+  assert.equal(runtime.metrics.releases, 1);
+  assert.equal(firstRepository.findById('order-b'), null);
+
+  firstRepository.save(order('order-b'));
+  assert.equal(firstRepository.findById('order-b').orderId, 'order-b');
+  assert.equal(runtime.metrics.acquisitions, 2);
+  assert.equal(runtime.metrics.releases, 2);
+
+  firstExecutionSupport.withScriptLock(() => firstRepository.save(order('order-c')));
+  assert.equal(firstRepository.findById('order-c').orderId, 'order-c');
+  assert.equal(runtime.metrics.acquisitions, 3, 'nested repository save must reuse the outer lock');
+  assert.equal(runtime.metrics.releases, 3);
+  assert.deepEqual(runtime.rows[0].slice(7), ['confirmedAt', 'confirmedBy']);
+  assert.equal(firstRepository.findById('order-c').confirmedAt, null);
+  assert.equal(firstRepository.findById('order-c').confirmedBy, null);
+
+  firstRepository.save(Object.assign({}, order('order-c'), {
+    status: 'PAID',
+    confirmedAt: '2026-07-13T01:00:00.000Z',
+    confirmedBy: 'staff@example.com'
+  }));
+  assert.equal(firstRepository.findById('order-c').confirmedAt, '2026-07-13T01:00:00.000Z');
+  assert.equal(firstRepository.findById('order-c').confirmedBy, 'staff@example.com');
+});
