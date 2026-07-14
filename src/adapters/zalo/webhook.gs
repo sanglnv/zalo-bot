@@ -63,6 +63,18 @@ var ZaloWebhook = (function () {
       }
     }
 
+    function sendUserMessage(userId, text) {
+      if (!userId) return { delivered: false, error: null };
+      try {
+        dependencies.client.execute(dependencies.renderOutboundMessage(
+          { type: 'text', content: { text: text } }, userId
+        ));
+        return { delivered: true, error: null };
+      } catch (error) {
+        return { delivered: false, error: error && error.message ? error.message : String(error) };
+      }
+    }
+
     function doPost(event) {
       var rawBody = event && event.postData && event.postData.contents;
       var parsed = null;
@@ -124,16 +136,30 @@ var ZaloWebhook = (function () {
         }
         setStatus(messageId, 'delivered');
       } catch (error) {
-        if (claimed && messageId) setStatus(messageId, 'failed');
         var userId = inbound && inbound.platformUserId;
-        var fallback = sendFallback(userId);
-        logError(error, {
-          stage: 'processing',
-          messageId: messageId,
-          platformUserId: userId || null,
-          fallbackDelivered: fallback.delivered,
-          fallbackError: fallback.error
-        });
+        if (error && error.customerMessage) {
+          var guidance = sendUserMessage(userId, error.customerMessage);
+          if (claimed && messageId) setStatus(messageId, guidance.delivered ? 'delivered' : 'failed');
+          logError(error, {
+            stage: 'user_action',
+            messageId: messageId,
+            platformUserId: userId || null,
+            action: error.action || null,
+            currentState: error.currentState || null,
+            customerMessageDelivered: guidance.delivered,
+            deliveryError: guidance.error
+          });
+        } else {
+          if (claimed && messageId) setStatus(messageId, 'failed');
+          var fallback = sendFallback(userId);
+          logError(error, {
+            stage: 'processing',
+            messageId: messageId,
+            platformUserId: userId || null,
+            fallbackDelivered: fallback.delivered,
+            fallbackError: fallback.error
+          });
+        }
       }
       return successResponse();
     }

@@ -2,7 +2,7 @@
 
 var TelegramWebhook = (function () {
   function successResponse() {
-    return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
+    return HtmlService.createHtmlOutput('OK');
   }
 
   function requireUpdateId(update) {
@@ -60,6 +60,7 @@ var TelegramWebhook = (function () {
     }
 
     function answerCallback(update, updateId) {
+      if (update && update._gateway_callback_answered === true) return;
       if (!update || !update.callback_query || !update.callback_query.id) return;
       try {
         dependencies.client.execute({
@@ -118,6 +119,56 @@ var TelegramWebhook = (function () {
       logError(error, context);
     }
 
+    function handleUserActionFailure(error, details) {
+      var delivered = false;
+      var deliveryError = null;
+      if (details.chatId) {
+        try {
+          dependencies.client.execute({
+            method: 'sendMessage',
+            params: { chat_id: details.chatId, text: error.customerMessage }
+          });
+          delivered = true;
+        } catch (sendError) {
+          deliveryError = sendError && sendError.message ? sendError.message : String(sendError);
+        }
+      }
+      if (details.claimed && details.updateId != null) {
+        updateDeliveryStatus(details.updateId, delivered ? 'delivered' : 'failed');
+      }
+      logError(error, {
+        updateId: details.updateId,
+        chatId: details.chatId,
+        stage: 'user_action',
+        action: error.action || null,
+        currentState: error.currentState || null,
+        customerMessageDelivered: delivered,
+        deliveryError: deliveryError
+      });
+    }
+
+    function clearCompletedCallbackKeyboard(update, updateId) {
+      var callback = update && update.callback_query;
+      var message = callback && callback.message;
+      var action = null;
+      try {
+        action = callback ? dependencies.mapInboundMessage(update).payload.action : null;
+      } catch (ignore) {}
+      if (!message || message.message_id == null || (action !== 'confirm_order' && action !== 'cancel')) return;
+      try {
+        dependencies.client.execute({
+          method: 'editMessageReplyMarkup',
+          params: {
+            chat_id: String(message.chat.id),
+            message_id: message.message_id,
+            reply_markup: { inline_keyboard: [] }
+          }
+        });
+      } catch (error) {
+        logError(error, { updateId: updateId, stage: 'clear_callback_keyboard', action: action });
+      }
+    }
+
     function doPost(event) {
       var update = null;
       var updateId = null;
@@ -131,6 +182,7 @@ var TelegramWebhook = (function () {
         update = JSON.parse(event.postData.contents);
         updateId = requireUpdateId(update);
         chatId = rawChatId(update);
+        answerCallback(update, updateId);
         transaction = dependencies.withLock(function () {
           if (dependencies.processedUpdateRepository.has(updateId)) {
             return { duplicate: true, commands: [] };
@@ -149,7 +201,6 @@ var TelegramWebhook = (function () {
         });
 
         if (transaction.duplicate) {
-          answerCallback(update, updateId);
           return successResponse();
         }
         for (var index = 0; index < transaction.commands.length; index += 1) {
@@ -165,21 +216,27 @@ var TelegramWebhook = (function () {
               failedCommand: command,
               recovery: transaction.recovery
             });
-            answerCallback(update, updateId);
             return successResponse();
           }
         }
         updateDeliveryStatus(updateId, 'delivered');
-        answerCallback(update, updateId);
+        clearCompletedCallbackKeyboard(update, updateId);
       } catch (error) {
-        handleProcessingFailure(error, {
-          claimed: claimed,
-          updateId: updateId,
-          chatId: chatId,
-          stage: 'processing',
-          recovery: transaction && transaction.recovery
-        });
-        answerCallback(update, updateId);
+        if (error && error.customerMessage) {
+          handleUserActionFailure(error, {
+            claimed: claimed,
+            updateId: updateId,
+            chatId: chatId
+          });
+        } else {
+          handleProcessingFailure(error, {
+            claimed: claimed,
+            updateId: updateId,
+            chatId: chatId,
+            stage: 'processing',
+            recovery: transaction && transaction.recovery
+          });
+        }
       }
       return successResponse();
     }
@@ -231,17 +288,29 @@ function doTelegramPostWithoutMetrics(e) {
     } catch (loggingError) {
       if (typeof console !== 'undefined' && console.error) console.error(loggingError);
     }
-    return ContentService.createTextOutput('OK').setMimeType(ContentService.MimeType.TEXT);
+    return HtmlService.createHtmlOutput('OK');
   }
 }
 
-function registerWebhook() {
+function registerWebhook(dropPendingUpdates) {
   var properties = PropertiesService.getScriptProperties();
-  var webAppUrl = properties.getProperty('WEB_APP_URL');
-  if (!webAppUrl) throw new Error('Missing required script property: WEB_APP_URL');
+  var gatewayUrl = properties.getProperty('TELEGRAM_WEBHOOK_URL');
+  var webhookSecret = properties.getProperty('TELEGRAM_WEBHOOK_SECRET');
+  if (!gatewayUrl) throw new Error('Missing required script property: TELEGRAM_WEBHOOK_URL');
+  if (!webhookSecret) throw new Error('Missing required script property: TELEGRAM_WEBHOOK_SECRET');
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(webhookSecret)) {
+    throw new Error('TELEGRAM_WEBHOOK_SECRET must use 1-256 characters from A-Z, a-z, 0-9, _ and -');
+  }
+  var params = {
+    url: gatewayUrl,
+    allowed_updates: ['message', 'callback_query'],
+    max_connections: 1,
+    drop_pending_updates: dropPendingUpdates === true
+  };
+  params.secret_token = webhookSecret;
   return TelegramClient.create().execute({
     method: 'setWebhook',
-    params: { url: webAppUrl + '?platform=telegram', allowed_updates: ['message', 'callback_query'] }
+    params: params
   });
 }
 

@@ -51,8 +51,12 @@ function decodeCallbackData(data) {
     throw new Error('callback_data contains invalid encoding');
   }
   if (!action) throw new Error('callback_data action is missing');
-  if (action === 'add_item') {
+  if (action === 'add_item' || action === 'decrease_item' || action === 'remove_item') {
     if (!productId) throw new Error('add_item callback_data requires productId');
+    if (action !== 'add_item') {
+      if (parts.length > 2) throw new Error(action + ' callback_data has too many components');
+      return { action: action, productId: productId };
+    }
     var quantity = parts.length < 3 || parts[2] === '' ? 1 : Number(parts[2]);
     if (!Number.isInteger(quantity) || quantity <= 0) {
       throw new Error('add_item callback_data quantity must be a positive integer');

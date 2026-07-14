@@ -13,6 +13,10 @@ function buttonPayload(button) {
   return payload;
 }
 
+function formatPrice(value) {
+  return String(Math.round(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' ₫';
+}
+
 /**
  * Pure conversion from a core OutboundMessage to a Telegram Bot API command.
  * @param {{type: string, content: Object}} message
@@ -39,7 +43,7 @@ function renderOutboundMessage(message, chatId) {
         reply_markup: {
           inline_keyboard: content.items.map(function (product) {
             return [{
-              text: product.name + ' — ' + product.price,
+              text: product.name + ' — ' + formatPrice(product.price),
               callback_data: telegramRendererDependencies().encodeCallbackData({
                 action: 'add_item', productId: product.productId, quantity: 1
               })
@@ -57,12 +61,14 @@ function renderOutboundMessage(message, chatId) {
         chat_id: id,
         text: typeof content.text === 'string' ? content.text : '',
         reply_markup: {
-          inline_keyboard: [content.buttons.map(function (button) {
-            return {
+          inline_keyboard: content.buttons.reduce(function (rows, button, index) {
+            if (index % 2 === 0) rows.push([]);
+            rows[rows.length - 1].push({
               text: button.label,
               callback_data: telegramRendererDependencies().encodeCallbackData(buttonPayload(button))
-            };
-          })]
+            });
+            return rows;
+          }, [])
         }
       }
     };
@@ -71,7 +77,9 @@ function renderOutboundMessage(message, chatId) {
     if (typeof content.data !== 'string' || !/^https?:\/\//.test(content.data)) {
       throw new TypeError('image message content.data must be a direct HTTP(S) URL');
     }
-    return { method: 'sendPhoto', params: { chat_id: id, photo: content.data } };
+    var photoParams = { chat_id: id, photo: content.data };
+    if (typeof content.caption === 'string' && content.caption) photoParams.caption = content.caption;
+    return { method: 'sendPhoto', params: photoParams };
   }
   throw new Error('Unsupported OutboundMessage type: ' + message.type);
 }

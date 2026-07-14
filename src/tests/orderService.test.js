@@ -65,7 +65,7 @@ test('catalog, cart, checkout, confirmation, and payment QR flow', () => {
   assert.deepEqual(catalog[0].content.items.map((item) => item.productId), ['p1', 'p2']);
 
   const added = f.send('', { action: 'add_item', productId: 'p1', quantity: 2 });
-  assert.equal(added[0].type, 'text');
+  assert.equal(added[0].type, 'button');
   assert.equal(added[0].content.cart[0].quantity, 2);
 
   const checkout = f.send('', { action: 'checkout' });
@@ -107,12 +107,26 @@ test('adding the same product twice accumulates its quantity', () => {
   assert.equal([...f.states.values()][0].contextData.cart[0].quantity, 5);
 });
 
+test('customers can decrease and remove items without cancelling the whole cart', () => {
+  const f = fixture();
+  f.send('catalog');
+  f.send('', { action: 'add_item', productId: 'p1', quantity: 2 });
+  f.send('', { action: 'add_item', productId: 'p2', quantity: 1 });
+  let response = f.send('', { action: 'decrease_item', productId: 'p1' });
+  assert.match(response[0].content.text, /House coffee × 1/);
+  response = f.send('', { action: 'remove_item', productId: 'p2' });
+  assert.doesNotMatch(response[0].content.text, /Green tea/);
+  assert.deepEqual([...f.states.values()][0].contextData.cart, [
+    { productId: 'p1', name: 'House coffee', unitPrice: 35000, quantity: 1 }
+  ]);
+});
+
 test('cancels a cart before an order is persisted', () => {
   const f = fixture();
   f.send('browse');
   f.send('', { action: 'add_item', productId: 'p1' });
   const response = f.send('', { action: 'cancel' });
-  assert.equal(response[0].content.text, 'Order cancelled.');
+  assert.equal(response[0].content.text, 'Đã hủy đơn/giỏ hàng.');
   assert.equal(f.orders.length, 0);
   assert.equal([...f.states.values()][0].currentState, 'CANCELLED');
 });
@@ -129,10 +143,16 @@ test('cancels an awaiting-payment order and updates its repository status', () =
 
 test('invalid flow and invalid product fail explicitly', () => {
   const f = fixture();
-  assert.throws(() => f.send('', { action: 'confirm_order' }), /Invalid transition/);
+  assert.throws(
+    () => f.send('', { action: 'confirm_order' }),
+    (error) => error instanceof OrderService.Errors.UserActionError && error.code === 'INVALID_FLOW'
+  );
   const other = fixture();
   other.send('catalog');
-  assert.throws(() => other.send('', { action: 'add_item', productId: 'missing' }), /unavailable/);
+  assert.throws(
+    () => other.send('', { action: 'add_item', productId: 'missing' }),
+    (error) => error instanceof OrderService.Errors.UserActionError && error.code === 'PRODUCT_UNAVAILABLE'
+  );
 });
 
 test('message-wide lock prevents interleaved duplicate confirmation for one customer', () => {
@@ -159,13 +179,74 @@ test('message-wide lock prevents interleaved duplicate confirmation for one cust
   assert.match(overlappingError.message, /transaction lock is already held/);
   assert.equal(f.orders.length, 1);
 
-  // A queued/retried delivery runs after the lock is released, reloads the new
-  // state, and must fail before another order is saved.
-  assert.throws(
-    () => f.send('', { action: 'confirm_order' }),
-    /Invalid transition: AWAITING_PAYMENT --CONFIRM_ORDER-->/
-  );
+  // A queued/retried callback reloads the committed order and returns its
+  // payment guidance without creating a second order.
+  const retry = f.send('', { action: 'confirm_order' });
+  assert.match(retry[0].content.text, /chờ thanh toán/);
   assert.equal(f.orders.length, 1);
+});
+
+test('catalog is repeatable and preserves an active cart', () => {
+  const f = fixture();
+  f.send('/catalog');
+  const repeated = f.send('catalog');
+  assert.equal(repeated[0].type, 'list');
+  f.send('', { action: 'add_item', productId: 'p1', quantity: 2 });
+  f.send('catalog');
+  const state = [...f.states.values()][0];
+  assert.equal(state.currentState, 'CART');
+  assert.equal(state.contextData.cart[0].quantity, 2);
+});
+
+test('cancelled, expired, and paid customers can start a clean new session', () => {
+  const cancelled = fixture();
+  cancelled.send('catalog');
+  cancelled.send('', { action: 'add_item', productId: 'p1' });
+  cancelled.send('cancel');
+  cancelled.send('catalog');
+  let state = [...cancelled.states.values()][0];
+  assert.equal(state.currentState, 'BROWSING');
+  assert.deepEqual(state.contextData, { cart: [] });
+
+  const paid = fixture();
+  const orderId = createAwaitingPaymentOrder(paid);
+  paid.service.confirmPayment(orderId, 'staff@example.com');
+  paid.send('', { action: 'new_order' });
+  state = [...paid.states.values()][0];
+  assert.equal(state.currentState, 'BROWSING');
+  assert.deepEqual(state.contextData, { cart: [] });
+});
+
+test('awaiting-payment actions return status and QR instead of transition errors', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  const catalog = f.send('catalog');
+  assert.match(catalog[0].content.text, new RegExp(orderId));
+  const qr = f.send('', { action: 'resend_qr' });
+  assert.equal(qr[0].type, 'image');
+  assert.equal(qr[0].content.data, `qr:${orderId}:35000`);
+  assert.equal(f.orders.length, 1);
+});
+
+test('start, help, unknown commands, cart, and status always return useful guidance', () => {
+  const f = fixture();
+  assert.match(f.send('/start')[0].content.text, /Xin chào/);
+  assert.match(f.send('something-unknown')[0].content.text, /Catalog/);
+  assert.match(f.send('/cart')[0].content.text, /trống/);
+  assert.match(f.send('/status')[0].content.text, /chưa có đơn/);
+});
+
+test('payment confirmation trusts order status even if UI state was independently reset', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  const customerId = f.orders[0].customerId;
+  f.states.set(customerId, {
+    customerId, currentState: 'BROWSING', contextData: { cart: [] },
+    updatedAt: '2026-07-13T10:00:00.000Z'
+  });
+  f.service.confirmPayment(orderId, 'staff@example.com');
+  assert.equal(f.orders[0].status, 'PAID');
+  assert.equal(f.states.get(customerId).currentState, 'BROWSING');
 });
 
 function createAwaitingPaymentOrder(f) {

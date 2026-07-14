@@ -37,15 +37,8 @@ function setup(setupOptions = {}) {
       return { getResponseCode: () => 200, getContentText: () => '{"ok":true,"result":{}}' };
     }
   };
-  global.ContentService = {
-    MimeType: { TEXT: 'text/plain' },
-    createTextOutput(text) {
-      return {
-        text,
-        mimeType: null,
-        setMimeType(value) { this.mimeType = value; return this; }
-      };
-    }
+  global.HtmlService = {
+    createHtmlOutput(text) { return { text, outputType: 'html' }; }
   };
   global.LockService = {
     getScriptLock: () => ({
@@ -146,7 +139,7 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
 
   responses.concat(duplicateResponse).forEach((response) => {
     assert.equal(response.text, 'OK');
-    assert.equal(response.mimeType, 'text/plain');
+    assert.equal(response.outputType, 'html');
   });
   assert.equal(f.getHandleCount(), 5, 'duplicate update must not reach OrderService');
   assert.equal(f.orders.length, 1);
@@ -160,6 +153,7 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
   assert.match(photoCalls[0].params.photo, /^https:\/\/img\.vietqr\.io\/image\//);
   assert.equal(photoCalls[0].params.chat_id, '777');
   assert.equal(apiCalls.filter((call) => call.method === 'answerCallbackQuery').length, 4);
+  assert.equal(apiCalls.filter((call) => call.method === 'editMessageReplyMarkup').length, 1);
   assert.equal(f.errors.length, 0);
   assert.equal(f.processed.get('104'), 'delivered');
 });
@@ -194,8 +188,8 @@ test('failed QR delivery sends fallback, marks failed, and logs manual recovery 
   assert.equal(deliveryLog.context.failedMethod, 'sendPhoto');
   assert.equal(deliveryLog.context.fallbackDelivered, true);
 
-  // Re-confirming cannot repeat the financial transition, but it must still
-  // produce a visible fallback instead of failing silently.
+  // Re-confirming cannot repeat the financial transition. It returns the
+  // existing pending-order guidance rather than a system-error fallback.
   const fallbackCount = () => f.fetchCalls.filter((call) =>
     call.url.endsWith('/sendMessage') &&
     call.params.text === 'Processing failed. Please contact support.'
@@ -204,8 +198,28 @@ test('failed QR delivery sends fallback, marks failed, and logs manual recovery 
   const retryResponse = f.post(callback(304, 'cb-confirm-retry', 'confirm_order'));
   assert.equal(retryResponse.text, 'OK');
   assert.equal(f.orders.length, 1);
-  assert.equal(f.processed.get('304'), 'failed');
-  assert.equal(fallbackCount(), beforeRetry + 1);
+  assert.equal(f.processed.get('304'), 'delivered');
+  assert.equal(fallbackCount(), beforeRetry);
+  assert.ok(f.fetchCalls.some((call) =>
+    call.url.endsWith('/sendMessage') && /chờ thanh toán/.test(call.params.text)
+  ));
+});
+
+test('user action errors send guidance and never masquerade as system failures', () => {
+  const f = setup();
+  const response = f.post(callback(400, 'cb-invalid-confirm', 'confirm_order'));
+  assert.equal(response.text, 'OK');
+  assert.equal(f.processed.get('400'), 'delivered');
+  const guidance = f.fetchCalls.find((call) =>
+    call.url.endsWith('/sendMessage') && /chọn sản phẩm/.test(call.params.text)
+  );
+  assert.ok(guidance);
+  assert.equal(f.fetchCalls.some((call) =>
+    call.url.endsWith('/sendMessage') && call.params.text === 'Processing failed. Please contact support.'
+  ), false);
+  const log = f.errors.find((entry) => entry.context.stage === 'user_action');
+  assert.equal(log.context.action, 'confirm_order');
+  assert.equal(log.context.currentState, 'IDLE');
 });
 
 test('unsupported update is claimed but does not call core or Telegram API', () => {
@@ -222,7 +236,7 @@ test('internal errors are logged and webhook still returns success', () => {
   const f = setup();
   const response = f.webhook.doPost({ postData: { contents: '{bad json' } });
   assert.equal(response.text, 'OK');
-  assert.equal(response.mimeType, 'text/plain');
+  assert.equal(response.outputType, 'html');
   assert.equal(f.errors.length, 1);
   assert.match(f.errors[0].message, /JSON/);
 });

@@ -7,6 +7,7 @@ Phase 1 provides a synchronous, platform-neutral order domain for Google Apps Sc
 - `src/core/`: domain contracts, pure state machine, pure billing, repository contracts, and order orchestration.
 - `src/repositories/`: Google Sheet repository implementations. Every write acquires `LockService.getScriptLock()`.
 - `src/adapters/telegram/`: pure Telegram mapping/rendering plus GAS webhook/client glue.
+- `telegram-gateway/`: Cloudflare Worker ingress, durable Queue forwarder, and DLQ monitor for Telegram.
 - `src/adapters/zalo/`: pure Zalo mapping/rendering/signature verification plus OA Send API, OAuth token rotation, ZBS, and webhook glue.
 - `src/tests/`: Node tests, including complete transition coverage and simulated overlapping Sheet writes.
 
@@ -103,6 +104,9 @@ Configure these under **Apps Script → Project Settings → Script Properties**
 | `VIETQR_TRANSFER_PREFIX` | Optional transfer-content prefix; defaults to `DH` |
 | `SUPPORT_CONTACT` | Optional phone/name included in delivery-failure messages |
 | `WEB_APP_URL` | Deployed Apps Script `/exec` URL |
+| `TELEGRAM_WEBHOOK_URL` | Deployed Cloudflare Worker URL; Telegram must never point directly at GAS |
+| `TELEGRAM_WEBHOOK_SECRET` | Random Telegram `secret_token`; same value is stored as a Worker secret |
+| `GAS_GATEWAY_TOKEN` | Separate random gateway-to-GAS token; same value is stored as a Worker secret |
 | `PAYMENT_TIMEOUT_MINUTES` | Optional unpaid-order timeout; defaults to `30` |
 
 Example catalog value:
@@ -125,7 +129,17 @@ The update is claimed early to prevent duplicate orders. After domain commit, ev
 
 For a failed payment QR, `ErrorLogs.context` records `orderId`, `chatId`, `qrUrl`, `failedMethod`, `fallbackDelivered`, and any `fallbackError`. Staff can filter for `"failedMethod":"sendPhoto"` and manually send the stored `qrUrl` to the stored `chatId`; the customer must not confirm the order again because its state is already `AWAITING_PAYMENT`.
 
-The same fallback applies to catalog, cart, checkout, cancel, and transition errors, so a later customer action cannot disappear silently. Phase 5 should preserve this separation between delivery deduplication and delivery outcome tracking.
+Expected customer mistakes do not use this fallback. Invalid commands, empty carts, unavailable products, and state conflicts produce contextual guidance and are logged with `stage: "user_action"`. The generic fallback is reserved for infrastructure, configuration, persistence, rendering, and delivery failures.
+
+### Conversation UX and repeat orders
+
+Both `/command` and plain-text forms are accepted for `start`, `catalog`, `cart`, `checkout`, `cancel`, `status`, and `help`. Telegram commands containing the bot suffix (for example `/catalog@shop_bot`) are normalized by the core action parser.
+
+Catalog browsing is repeatable: reopening it in `BROWSING`, `CART`, or `CONFIRMING` preserves the cart. A customer in `AWAITING_PAYMENT` receives the active order, amount, QR/status/cancel actions instead of a transition error. `PAID`, `DONE`, `CANCELLED`, and `EXPIRED` can start a clean session through `catalog` or `new_order`; this atomically replaces stale conversation context with `{ "cart": [] }`.
+
+After adding an item, the customer can decrease its quantity or remove it without cancelling the whole cart. Telegram lays action buttons out two per row, acknowledges callback queries before domain work, and removes confirm/cancel keyboards after successful processing to reduce accidental double taps.
+
+Order status is the payment source of truth. Staff confirmation and expiry verify `Orders.status === "AWAITING_PAYMENT"`; conversation state is advanced only when it still references that order. A UI reset can therefore never make a genuinely awaiting order impossible to confirm.
 
 ### Deploy and register the webhook
 
@@ -140,16 +154,22 @@ clasp push
 
 For an existing project, create `.clasp.json` with its `scriptId` and `rootDir` set to `.` instead of creating another project. Review `clasp show-file-status` before the first push because `clasp push` replaces the remote project contents.
 
+Deploy the Apps Script web app first, then deploy the mandatory gateway by following [telegram-gateway/README.md](telegram-gateway/README.md). Telegram is not registered directly against GAS: Apps Script cannot read Telegram's custom secret header, and accepting unauthenticated Telegram-shaped POST bodies would allow forged updates.
+
 Then:
 
 1. Add all required Script Properties.
 2. In Apps Script choose **Deploy → New deployment → Web app**.
 3. Execute as the deploying user and allow anonymous access so Telegram can POST without a Google login. See Google's [web app deployment guide](https://developers.google.com/apps-script/guides/web).
-4. Copy the deployed `/exec` URL into the `WEB_APP_URL` Script Property.
-5. Run `registerWebhook()` once from the Apps Script editor and authorize the requested scopes. It calls Telegram `setWebhook` for `message` and `callback_query` updates.
-6. After every code change, push and update the existing deployment; a `/dev` test URL is not suitable for Telegram.
+4. Copy the deployed `/exec` URL into `WEB_APP_URL`, deploy the Worker, and copy its public URL into `TELEGRAM_WEBHOOK_URL`.
+5. Store the same `TELEGRAM_WEBHOOK_SECRET` in GAS and Cloudflare, and store the same separate `GAS_GATEWAY_TOKEN` in both places.
+6. Run `setupProject()` once from the Apps Script editor and authorize the requested scopes. It validates configuration, creates/repairs repository sheet headers, and registers the gateway for `message` and `callback_query` updates with `max_connections: 1`.
+7. Run `healthCheck()`. `telegramWebhook.status` must be `ok`, `url` must equal `expectedUrl`, pending updates must be zero, and there must be no recent webhook error.
+8. After every GAS code change, push and update the existing deployment; a `/dev` test URL is not suitable for Telegram.
 
 There is no `getUpdates` polling and no sleep/retry loop in the webhook execution path.
+
+`healthCheck()` returns configuration, sheet, actual/expected webhook URLs, pending-update count, and the latest Telegram webhook error. A URL mismatch is reported as `misconfigured`. `registerWebhook(true)` is available for a deliberate clean cutover that drops queued updates; do not use it during a normal deployment because pending customer messages would be discarded.
 
 ## Zalo OA adapter
 
@@ -212,7 +232,7 @@ Production must place a small HTTPS gateway (for example Cloudflare Worker, Clou
 
 The `Orders` sheet is the single source of truth for payment state. A successful confirmation updates `status` to `PAID` and writes `confirmedAt` and `confirmedBy`; there is intentionally no separate `PaymentRepository`, avoiding two payment records that could drift apart. Existing `Orders` sheets receive the two new columns automatically on the next write, while older rows read them as `null`.
 
-`OrderService.confirmPayment(orderId, confirmedBy)` runs under the same script-wide lock as chat handling. It verifies that both the order and its customer conversation are still awaiting payment, applies the existing `PAYMENT_CONFIRMED` transition, updates the order/state, and returns normalized notifications plus the customer's platform links. Repeated or concurrent confirmation is reported as already resolved and does not send another customer notification.
+`OrderService.confirmPayment(orderId, confirmedBy)` runs under the same script-wide lock as chat handling. It verifies the order itself is still awaiting payment, updates it, advances the conversation only when it still points at that order, and returns normalized notifications plus the customer's platform links. Repeated or concurrent confirmation is reported as already resolved and does not send another customer notification.
 
 Notifications go through `notificationDispatcher.js` and `NotificationRegistry.gs`. The registry currently contains Telegram; Phase 5 can add another registry entry without changing payment confirmation or dispatch logic.
 
@@ -262,4 +282,4 @@ These rows are intentionally raw measurements, not an APM system or dashboard. N
 
 ## State-machine audit
 
-The complete per-state review is in [docs/state-machine-audit.md](docs/state-machine-audit.md). The explicit decision is that `PAID` is the practical terminal state for the current bill/payment scope. `COMPLETE → DONE` remains reserved for a future fulfilment workflow; Phase 4 does not add a completion menu or pretend that `DONE` is currently reachable.
+The complete per-state review is in [docs/state-machine-audit.md](docs/state-machine-audit.md). Payment/fulfilment states remain immutable for the completed order, while `START_NEW_ORDER` creates a fresh conversation context from `PAID`, `DONE`, `CANCELLED`, or `EXPIRED`.

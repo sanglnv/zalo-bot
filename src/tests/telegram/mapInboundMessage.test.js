@@ -40,6 +40,8 @@ test('compact callback encoding round-trips and defaults missing quantity to one
   });
   assert.equal(encodeCallbackData({ action: 'confirm_order' }), 'confirm_order');
   assert.deepEqual(decodeCallbackData('confirm_order'), { action: 'confirm_order' });
+  assert.deepEqual(decodeCallbackData('remove_item:p1'), { action: 'remove_item', productId: 'p1' });
+  assert.deepEqual(decodeCallbackData('decrease_item:p1'), { action: 'decrease_item', productId: 'p1' });
 });
 
 test('enforces callback_data validation and 64-byte limit', () => {

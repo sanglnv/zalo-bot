@@ -16,6 +16,12 @@ test('maps user text and decodes oa.query.hide payloads from message.text', () =
     platform: 'zalo', platformUserId: 'u1', text: '',
     payload: { action: 'add_item', productId: 'cà-phê:1', quantity: 2 }
   });
+  assert.deepEqual(mapper.decodeQueryPayload('zc:remove_item:p1'), {
+    action: 'remove_item', productId: 'p1'
+  });
+  assert.deepEqual(mapper.decodeQueryPayload('zc:decrease_item:p1'), {
+    action: 'decrease_item', productId: 'p1'
+  });
 });
 
 test('ignores non-user-message events and enforces payload limit', () => {

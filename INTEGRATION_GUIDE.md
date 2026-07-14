@@ -85,7 +85,7 @@ IDLE → BROWSING → CART ⟲(ADD_TO_CART) → CONFIRMING → AWAITING_PAYMENT 
 
 ## 6. Thiết lập & deploy — Telegram
 
-Script Properties bắt buộc: `SPREADSHEET_ID`, `TELEGRAM_BOT_TOKEN`, `CATALOG_JSON`, `VIETQR_BANK_ID`, `VIETQR_ACCOUNT_NO`, `VIETQR_ACCOUNT_NAME`, `WEB_APP_URL`. Tuỳ chọn: `VIETQR_TEMPLATE` (default `compact2`), `VIETQR_TRANSFER_PREFIX` (default `DH`), `SUPPORT_CONTACT`, `PAYMENT_TIMEOUT_MINUTES` (default `30`).
+Script Properties bắt buộc: `SPREADSHEET_ID`, `TELEGRAM_BOT_TOKEN`, `CATALOG_JSON`, `VIETQR_BANK_ID`, `VIETQR_ACCOUNT_NO`, `VIETQR_ACCOUNT_NAME`, `WEB_APP_URL`, `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET`, `GAS_GATEWAY_TOKEN`. Tuỳ chọn: `VIETQR_TEMPLATE` (default `compact2`), `VIETQR_TRANSFER_PREFIX` (default `DH`), `SUPPORT_CONTACT`, `PAYMENT_TIMEOUT_MINUTES` (default `30`).
 
 ```sh
 clasp login
@@ -93,7 +93,15 @@ clasp create-script --title "Zalo Clawbot" --type standalone --rootDir .
 clasp push
 ```
 
-Sau đó: Deploy → New deployment → Web app (Execute as deploying user, Anyone access) → copy URL `/exec` vào `WEB_APP_URL` → chạy `registerWebhook()` 1 lần trong Apps Script editor (gọi Telegram `setWebhook`, subscribe `message` + `callback_query`, tự thêm `?platform=telegram`).
+Sau đó:
+
+1. Deploy → New deployment → Web app (Execute as deploying user, Anyone access), copy URL `/exec` vào `WEB_APP_URL`.
+2. Vào `telegram-gateway/`, tạo 2 Cloudflare Queue `zalo-clawbot-telegram` và `zalo-clawbot-telegram-dlq`, cấu hình 4 Worker secret theo `telegram-gateway/README.md`, rồi chạy `npm run check` và `npm run deploy`.
+3. Copy URL Worker vào Script Property `TELEGRAM_WEBHOOK_URL`. `TELEGRAM_WEBHOOK_SECRET` và `GAS_GATEWAY_TOKEN` phải khớp theo từng cặp giữa GAS và Worker; đây là 2 secret khác nhau.
+4. Push/deploy GAS mới nhất, chạy `setupProject()` hoặc `registerWebhook(false)` 1 lần trong Apps Script editor.
+5. Chạy `healthCheck()`: `telegramWebhook.status` phải là `ok`, `url === expectedUrl`, queue chờ bằng 0 và không có `lastErrorMessage` mới.
+
+Không đăng ký Telegram thẳng vào `WEB_APP_URL?platform=telegram`. Router GAS chỉ nhận update Telegram có `gateway_token` hợp lệ do Worker thêm; request Telegram-shaped không qua gateway được trả `OK` nhưng không chạy nghiệp vụ.
 
 ## 7. Thiết lập & deploy — Zalo OA
 

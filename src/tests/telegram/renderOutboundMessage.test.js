@@ -23,8 +23,8 @@ test('renders catalog as one inline-keyboard row per product', () => {
   }, 10);
   assert.equal(command.method, 'sendMessage');
   assert.deepEqual(command.params.reply_markup.inline_keyboard, [
-    [{ text: 'Coffee — 35000', callback_data: 'add_item:p1:1' }],
-    [{ text: 'Tea — 20000', callback_data: 'add_item:p2:1' }]
+    [{ text: 'Coffee — 35.000 ₫', callback_data: 'add_item:p1:1' }],
+    [{ text: 'Tea — 20.000 ₫', callback_data: 'add_item:p2:1' }]
   ]);
 });
 
@@ -48,6 +48,14 @@ test('renders a direct QR URL as sendPhoto', () => {
   }, '10'), {
     method: 'sendPhoto',
     params: { chat_id: '10', photo: 'https://img.vietqr.io/image/demo.png' }
+  });
+});
+
+test('renders an optional QR caption', () => {
+  assert.deepEqual(renderOutboundMessage({
+    type: 'image', content: { data: 'https://example.test/qr.png', caption: 'Đơn #1' }
+  }, '10'), {
+    method: 'sendPhoto', params: { chat_id: '10', photo: 'https://example.test/qr.png', caption: 'Đơn #1' }
   });
 });
 

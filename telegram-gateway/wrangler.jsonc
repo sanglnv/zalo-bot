@@ -1,0 +1,64 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zalo-clawbot-telegram-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-14",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "vars": {
+    "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev"
+  },
+
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
+  },
+
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
+  "queues": {
+    "producers": [
+      {
+        "binding": "TELEGRAM_UPDATES",
+        "queue": "zalo-clawbot-telegram"
+      },
+      {
+        "binding": "TELEGRAM_DLQ",
+        "queue": "zalo-clawbot-telegram-dlq"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "zalo-clawbot-telegram",
+        "max_batch_size": 1,
+        "max_batch_timeout": 0,
+        "max_concurrency": 1,
+        "max_retries": 5,
+        "retry_delay": 2,
+        "dead_letter_queue": "zalo-clawbot-telegram-dlq"
+      }
+    ]
+  },
+
+  "secrets": {
+    "required": [
+      "TELEGRAM_WEBHOOK_SECRET",
+      "TELEGRAM_BOT_TOKEN",
+      "GAS_WEB_APP_URL",
+      "GAS_GATEWAY_TOKEN"
+    ]
+  }
+}

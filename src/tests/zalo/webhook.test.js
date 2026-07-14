@@ -91,3 +91,13 @@ test('invalid signature is logged separately and never reaches business logic', 
   assert.equal(f.calls.length, 0);
   assert.equal(f.errors[0].context.stage, 'signature_verification');
 });
+
+test('invalid customer flow returns guidance instead of a system fallback', () => {
+  const f = setup();
+  f.post('m-invalid', 'zc:confirm_order');
+  assert.equal(f.processed.get('m-invalid'), 'delivered');
+  assert.equal(f.calls.some((call) => call.params.message.text === 'Fallback'), false);
+  assert.ok(f.calls.some((call) => /chọn sản phẩm/.test(call.params.message.text)));
+  assert.equal(f.errors[0].context.stage, 'user_action');
+  assert.equal(f.errors[0].context.currentState, 'IDLE');
+});

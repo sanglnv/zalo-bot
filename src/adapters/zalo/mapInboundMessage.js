@@ -44,8 +44,12 @@ function decodeQueryPayload(value) {
     throw new Error('Zalo query payload contains invalid encoding');
   }
   if (!action) throw new Error('Zalo query payload action is missing');
-  if (action === 'add_item') {
+  if (action === 'add_item' || action === 'decrease_item' || action === 'remove_item') {
     if (!productId) throw new Error('add_item query payload requires productId');
+    if (action !== 'add_item') {
+      if (parts.length > 2) throw new Error('Invalid ' + action + ' Zalo query payload');
+      return { action: action, productId: productId };
+    }
     var quantity = parts.length < 3 || parts[2] === '' ? 1 : Number(parts[2]);
     if (!Number.isInteger(quantity) || quantity <= 0 || parts.length > 3) {
       throw new Error('Invalid add_item Zalo query payload');
