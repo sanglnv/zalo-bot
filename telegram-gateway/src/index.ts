@@ -25,7 +25,6 @@ const encoder = new TextEncoder();
 type FastPathEnvironment = Omit<Env, "FAST_PATH_ENABLED"> & {
   TELEGRAM_SESSIONS: DurableObjectNamespace<TelegramSession>;
   FAST_PATH_ENABLED: string;
-  FAST_PATH_CHAT_IDS?: string;
   TELEGRAM_ADMIN_USER_IDS?: string;
   CATALOG_DB: D1Database;
   FAST_PATH_SYNC: Queue<FastPathSyncMessage>;
@@ -289,12 +288,7 @@ async function answerCallback(
 }
 
 function fastPathEnabled(env: FastPathEnvironment, chatId: string | null): boolean {
-  if (env.FAST_PATH_ENABLED !== "true" || !chatId) return false;
-  const allowed = (env.FAST_PATH_CHAT_IDS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return allowed.includes(chatId);
+  return env.FAST_PATH_ENABLED === "true" && chatId !== null;
 }
 
 function telegramAdminEnabled(env: FastPathEnvironment, update: TelegramUpdate): boolean {

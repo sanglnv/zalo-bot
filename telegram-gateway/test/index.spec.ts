@@ -157,7 +157,7 @@ describe("Telegram webhook ingress", () => {
 });
 
 describe("Telegram Durable Object fast path", () => {
-  it("processes a pilot chat directly without publishing to the GAS queue", async () => {
+  it("processes an enabled chat directly without publishing to the GAS queue", async () => {
     let failPaymentNotification = false;
     const telegramFetch = vi.fn(async (input: RequestInfo | URL) => {
       if (failPaymentNotification && String(input).includes("/sendMessage")) {
@@ -199,10 +199,9 @@ describe("Telegram Durable Object fast path", () => {
        ) VALUES ('p1', date('now', '+7 hours'), 2, 2, 1, ?)`
     ).bind(new Date().toISOString()).run();
     const { environment, queued } = fixture();
-    const pilotEnvironment = {
+    const fastPathEnvironment = {
       ...environment,
       FAST_PATH_ENABLED: "true",
-      FAST_PATH_CHAT_IDS: "7001,-100",
       TELEGRAM_ADMIN_USER_IDS: "7001",
       VIETQR_BANK_ID: "970422",
       VIETQR_ACCOUNT_NO: "123456789",
@@ -210,7 +209,7 @@ describe("Telegram Durable Object fast path", () => {
       VIETQR_TEMPLATE: "compact2",
       VIETQR_TRANSFER_PREFIX: "DH",
     } as unknown as Env;
-    const session = pilotEnvironment.TELEGRAM_SESSIONS.getByName("7001", {
+    const session = fastPathEnvironment.TELEGRAM_SESSIONS.getByName("7001", {
       locationHint: "apac-se",
     });
 
@@ -245,7 +244,7 @@ describe("Telegram Durable Object fast path", () => {
 
     for (const update of updates) {
       const response = await worker.fetch(
-        webhookRequest(update), pilotEnvironment, createExecutionContext()
+        webhookRequest(update), fastPathEnvironment, createExecutionContext()
       );
       expect(response.status).toBe(200);
     }
@@ -258,7 +257,7 @@ describe("Telegram Durable Object fast path", () => {
           message: { chat: { id: 7001 } },
         },
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     ));
     const confirmationResponses = await Promise.all(concurrentConfirmations);
@@ -328,7 +327,7 @@ describe("Telegram Durable Object fast path", () => {
           chatId: "7001", orderId, action: "confirm", actor: "staff@example.com",
         }),
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     expect(paymentResponse.status).toBe(200);
@@ -368,7 +367,7 @@ describe("Telegram Durable Object fast path", () => {
           chatId: "7001", orderId, action: "confirm", actor: "staff@example.com",
         }),
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     expect(await repeatedPayment.json()).toEqual(expect.objectContaining({
@@ -383,7 +382,7 @@ describe("Telegram Durable Object fast path", () => {
         update_id: 70016,
         message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/admin" },
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     await worker.fetch(
@@ -391,7 +390,7 @@ describe("Telegram Durable Object fast path", () => {
         update_id: 70017,
         message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/ton p1 5" },
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     const adjusted = await workerEnv.CATALOG_DB.prepare(
@@ -408,7 +407,7 @@ describe("Telegram Durable Object fast path", () => {
           text: "/ton p1 9",
         },
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     const protectedInventory = await workerEnv.CATALOG_DB.prepare(
@@ -425,7 +424,7 @@ describe("Telegram Durable Object fast path", () => {
           text: "/ton p1 11",
         },
       }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
     const actorProtectedInventory = await workerEnv.CATALOG_DB.prepare(
@@ -448,22 +447,21 @@ describe("Telegram Durable Object fast path", () => {
     expect(response.status).toBe(401);
   });
 
-  it("keeps non-allowlisted chats on the durable Queue fallback", async () => {
+  it("routes every chat through fast path when globally enabled", async () => {
     const { environment, queued } = fixture();
-    const pilotEnvironment = {
+    const fastPathEnvironment = {
       ...environment,
       FAST_PATH_ENABLED: "true",
-      FAST_PATH_CHAT_IDS: "9999",
     } as unknown as Env;
 
     const response = await worker.fetch(
       webhookRequest({ update_id: 70020, message: { chat: { id: 7002 }, text: "catalog" } }),
-      pilotEnvironment,
+      fastPathEnvironment,
       createExecutionContext(),
     );
 
     expect(response.status).toBe(200);
-    expect(queued).toHaveLength(1);
+    expect(queued).toHaveLength(0);
   });
 });
 

@@ -18,7 +18,7 @@ Cloudflare alarms and Queues are at-least-once. Stable effect IDs, reservation s
 
 ## Verification
 
-1. Create a pilot order and confirm it from the Sheets menu.
+1. Create a test order and confirm it from the Sheets menu.
 2. Confirm the DO result logs `telegram_fast_path_payment_resolved` with `status: PAID`.
 3. Confirm Telegram receives one payment message and Sheets changes to `PAID`.
 4. Click confirmation again and confirm `already_resolved` without a second message.
@@ -28,4 +28,4 @@ Cloudflare alarms and Queues are at-least-once. Stable effect IDs, reservation s
 
 ## Rollback
 
-Set `FAST_PATH_ENABLED` to `false` to stop creation of new fast-path orders. This is the checked-in default and must remain false during rollout until tests and outboxes are healthy. Existing fast-path orders must still resolve through the Worker because their source-of-truth state is already in Durable Objects. Roll back the Worker deployment only after all existing pilot orders are resolved or migrated.
+Set `FAST_PATH_ENABLED` to `false` to stop creation of new fast-path orders. Existing fast-path orders must still resolve through the Worker because their source-of-truth state is already in Durable Objects. Roll back the Worker deployment only after all existing fast-path orders are resolved or migrated.

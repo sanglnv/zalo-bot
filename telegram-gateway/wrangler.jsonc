@@ -11,7 +11,7 @@
 
   "vars": {
     "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
-    "FAST_PATH_ENABLED": "false",
+    "FAST_PATH_ENABLED": "true",
     "PAYMENT_TIMEOUT_MINUTES": "30"
   },
 

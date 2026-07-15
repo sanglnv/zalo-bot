@@ -52,6 +52,7 @@ function createPaymentExpiryRunner(dependencies) {
       expired: 0,
       notificationFailed: 0,
       resolved: 0,
+      skipped: 0,
       failed: 0,
       results: []
     };
@@ -76,6 +77,14 @@ function createPaymentExpiryRunner(dependencies) {
             'fast_path_probe_failed',
             order
           );
+          summary.skipped += 1;
+          summary.results.push({
+            orderId: order.orderId,
+            ok: false,
+            reason: 'fast_path_probe_failed'
+          });
+          // Keep the order awaiting payment so the next scan can retry the probe.
+          return;
         }
       }
       var expiration;

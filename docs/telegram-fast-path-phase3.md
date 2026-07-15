@@ -42,7 +42,7 @@ The current export shape `{ "id", "name", "basePrice" }` is also accepted and no
 2. Run Apps Script `setupSystem()` so `FastPathSyncedUpdates` và `FastPathSyncState` exist, then push/deploy GAS.
 3. Create the sync queue.
 4. Run gateway checks and deploy the Worker with `FAST_PATH_ENABLED` still false.
-5. Enable only allowlisted test chats and verify `telegram_fast_path_synced` logs.
+5. Enable fast path and verify `telegram_fast_path_synced` logs for test chats before broader traffic validation.
 6. Confirm the same customer, conversation and order appear once in Sheets.
 
 ## Failure and rollback

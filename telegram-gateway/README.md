@@ -6,7 +6,7 @@ Cloudflare Worker này là ingress production bắt buộc giữa Telegram và G
 
 Worker kiểm tra `X-Telegram-Bot-Api-Secret-Token`, dừng callback spinner ở edge, ghi update vào Queue trước khi trả `200`, rồi consumer chuyển tiếp tới GAS. Delivery lỗi được retry với backoff và cuối cùng đi vào DLQ. Cron mỗi 5 phút ghi structured error log nếu DLQ có backlog, gọi Telegram `getWebhookInfo`, tự sửa URL drift bằng `setWebhook` mà không xoá pending updates, và probe token Worker→GAS.
 
-Phase 2 có fast path thử nghiệm dùng SQLite Durable Object theo từng Telegram chat để xử lý nghiệp vụ và gửi phản hồi ngay tại Worker. Tính năng này tắt mặc định và chỉ áp dụng khi chat đồng thời nằm trong allowlist. Xem [runbook Phase 2](../docs/telegram-fast-path-phase2.md); không dùng tài khoản pilot cho đơn/thanh toán thật trước khi dữ liệu được mirror về Sheets.
+Phase 2 có fast path dùng SQLite Durable Object theo từng Telegram chat để xử lý nghiệp vụ và gửi phản hồi ngay tại Worker. Khi `FAST_PATH_ENABLED=true`, tính năng áp dụng cho mọi chat; đặt lại thành `false` để chuyển toàn bộ lưu lượng về Queue → GAS. Xem [runbook Phase 2](../docs/telegram-fast-path-phase2.md).
 
 Phase 3 lưu catalog lớn trong D1 và đẩy snapshot fast path qua Queue để GAS upsert về Sheets mà không chặn phản hồi khách hàng. Xem [runbook Phase 3](../docs/telegram-fast-path-phase3.md).
 
@@ -63,7 +63,7 @@ npm run deploy
 2. Gửi `/start`, `catalog`, thêm sản phẩm và bấm callback trên Telegram. Callback phải hết spinner ngay; bot phải trả lời đúng một lần.
 3. Trong Cloudflare Workers Logs, xác nhận `telegram_webhook_healthy`, `gas_gateway_healthy`, rồi xác nhận `telegram_update_queued` và `telegram_update_forwarded` có cùng `updateId` khi test chat.
 4. Theo dõi `telegram_dlq_not_empty`; staff chat cũng nhận cảnh báo chủ động. Nếu xuất hiện, tra `updateId` trong logs và xử lý nguyên nhân GAS trước khi replay thủ công; không tạo consumer tự xoá DLQ.
-5. Trước khi bật pilot, giữ `FAST_PATH_ENABLED=false`, xác nhận snapshot v2 tăng `revision` theo từng customer và mọi `inventory_effects`, `queue_outbox`, `notification_outbox` đều đã được drain. Sau đó mới bật allowlist hẹp và theo dõi log.
+5. Khi fast path được bật, xác nhận snapshot v2 tăng `revision` theo từng customer và mọi `inventory_effects`, `queue_outbox`, `notification_outbox` đều được drain; theo dõi log và dùng `FAST_PATH_ENABLED=false` để rollback toàn bộ nếu cần.
 
 Probe không cần secret:
 
