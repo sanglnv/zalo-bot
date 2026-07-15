@@ -2,6 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 // These modules are deliberately shared with GAS so the fast path cannot drift
 // from the existing business state machine and Telegram adapter contract.
 import OrderService from "../../src/core/orderService.js";
+import Domain from "../../src/core/domain.js";
+import StateMachine from "../../src/core/stateMachine.js";
+import Billing from "../../src/core/billing.js";
+import Repositories from "../../src/core/repositoryContracts.js";
 import TelegramInboundMapper from "../../src/adapters/telegram/mapInboundMessage.js";
 import TelegramOutboundRenderer from "../../src/adapters/telegram/renderOutboundMessage.js";
 import type { TelegramUpdate } from "./index";
@@ -50,6 +54,10 @@ export interface FastPathResult {
 }
 
 export interface FastPathSnapshot {
+  schemaVersion: 2;
+  snapshotId: string;
+  customerId: string;
+  revision: number;
   updateId: number;
   customer: JsonRecord;
   conversationState: JsonRecord;
@@ -62,6 +70,7 @@ export interface PaymentResolution {
   orderId: string;
   status: string | null;
   outboxId: string | null;
+  deliveryStatus: "delivered" | "pending" | null;
 }
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -113,6 +122,8 @@ export function telegramChatId(update: TelegramUpdate): string | null {
 }
 
 export class TelegramSession extends DurableObject<Env> {
+  private processingTail: Promise<void> = Promise.resolve();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.storage.sql.exec(`
@@ -144,7 +155,49 @@ export class TelegramSession extends DurableObject<Env> {
         commands_json TEXT NOT NULL,
         snapshot_json TEXT NOT NULL,
         delivered INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
         created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS notification_progress (
+        outbox_id TEXT PRIMARY KEY,
+        next_command_index INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS sync_metadata (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO sync_metadata(singleton, revision) VALUES (1, 0);
+      CREATE TABLE IF NOT EXISTS queue_outbox (
+        message_id TEXT PRIMARY KEY,
+        body_json TEXT NOT NULL,
+        published INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        lease_until INTEGER,
+        last_error TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS inventory_effects (
+        effect_id TEXT PRIMARY KEY,
+        effect_type TEXT NOT NULL,
+        reservation_id TEXT,
+        order_id TEXT,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        lease_until INTEGER,
+        last_error TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS order_inventory_links (
+        order_id TEXT PRIMARY KEY,
+        reservation_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS order_outboxes (
+        order_id TEXT PRIMARY KEY,
+        outbox_id TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS admin_drafts (
         chat_id TEXT PRIMARY KEY,
@@ -160,6 +213,22 @@ export class TelegramSession extends DurableObject<Env> {
     config: FastPathConfig,
     isAdmin = false
   ): Promise<FastPathResult> {
+    const previous = this.processingTail;
+    let release!: () => void;
+    this.processingTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await this.processUnlocked(update, config, isAdmin);
+    } finally {
+      release();
+    }
+  }
+
+  private async processUnlocked(
+    update: TelegramUpdate,
+    config: FastPathConfig,
+    isAdmin: boolean
+  ): Promise<FastPathResult> {
     requireFastPathConfig(config);
     const updateId = String(update.update_id);
     const startedAt = Date.now();
@@ -171,13 +240,14 @@ export class TelegramSession extends DurableObject<Env> {
       updateId
     ).toArray()[0];
     if (existing) {
+      await this.drainDurableEffectsBestEffort();
       return {
         updateId: update.update_id,
         duplicate: true,
         ignored: existing.ignored === 1,
         commands: JSON.parse(existing.commands_json) as TelegramCommand[],
         domainDurationMs: Date.now() - startedAt,
-        snapshot: this.snapshot(update.update_id)
+        snapshot: null
       };
     }
 
@@ -226,6 +296,13 @@ export class TelegramSession extends DurableObject<Env> {
         try {
           await this.reserveInventory(reservationId, businessDate, cart);
         } catch (error) {
+          this.enqueueInventoryEffect(
+            `release-reservation:${reservationId}`,
+            "RELEASE_RESERVATION",
+            reservationId,
+            null
+          );
+          await this.drainDurableEffectsBestEffort();
           const message = error instanceof Error && error.message.includes("OUT_OF_STOCK")
             ? "Một món trong giỏ vừa hết hàng. Vui lòng mở lại giỏ và chọn món khác."
             : "Không thể giữ tồn kho lúc này. Vui lòng thử lại.";
@@ -236,7 +313,7 @@ export class TelegramSession extends DurableObject<Env> {
           this.storeProcessed(updateId, commands, false);
           return {
             updateId: update.update_id, duplicate: false, ignored: false, commands,
-            domainDurationMs: Date.now() - startedAt, snapshot: this.snapshot(update.update_id)
+            domainDurationMs: Date.now() - startedAt, snapshot: null
           };
         }
       }
@@ -259,6 +336,7 @@ export class TelegramSession extends DurableObject<Env> {
 
       const repositories = this.repositories();
       const service = (OrderService as any).create({
+        coreDependencies: { Domain, StateMachine, Billing, Repositories },
         ...repositories,
         getCatalog: () => catalog,
         createQrContent: (order: JsonRecord) => paymentQr(config, order),
@@ -276,7 +354,8 @@ export class TelegramSession extends DurableObject<Env> {
         commands = outbound.map((message) =>
           TelegramOutboundRenderer.renderOutboundMessage(
             message,
-            inbound.platformUserId
+            inbound.platformUserId,
+            TelegramInboundMapper
           ) as TelegramCommand
         );
       } catch (error) {
@@ -288,6 +367,51 @@ export class TelegramSession extends DurableObject<Env> {
         }];
       }
 
+      const snapshot = this.createSnapshot(update.update_id);
+      if (snapshot) {
+        this.enqueueQueueMessage(
+          `snapshot:${snapshot.snapshotId}`,
+          { kind: "fast_path_sync", ...snapshot }
+        );
+      }
+      const awaiting = snapshot?.orders.find((order) => order.status === "AWAITING_PAYMENT");
+      if (reservationId) {
+        if (awaiting) {
+          const orderId = String(awaiting.orderId);
+          this.ctx.storage.sql.exec(
+            `INSERT INTO order_inventory_links(order_id, reservation_id) VALUES (?, ?)
+             ON CONFLICT(order_id) DO UPDATE SET reservation_id = excluded.reservation_id`,
+            orderId,
+            reservationId
+          );
+          this.enqueueInventoryEffect(
+            `commit-reservation:${reservationId}`,
+            "COMMIT_RESERVATION",
+            reservationId,
+            orderId
+          );
+        } else {
+          this.enqueueInventoryEffect(
+            `release-reservation:${reservationId}`,
+            "RELEASE_RESERVATION",
+            reservationId,
+            null
+          );
+        }
+      }
+      for (const order of snapshot?.orders ?? []) {
+        if (order.status === "CANCELLED" || order.status === "EXPIRED") {
+          this.enqueueInventoryEffect(
+            `release-order:${String(order.orderId)}`,
+            "RELEASE_ORDER",
+            null,
+            String(order.orderId)
+          );
+        }
+      }
+      if (inbound.payload?.action === "confirm_order" && reservationId && awaiting) {
+        this.enqueueOperationsOrder(update.update_id, inbound.platformUserId, awaiting);
+      }
       this.storeProcessed(updateId, commands, false);
       return {
         updateId: update.update_id,
@@ -295,30 +419,22 @@ export class TelegramSession extends DurableObject<Env> {
         ignored: false,
         commands,
         domainDurationMs: Date.now() - startedAt,
-        snapshot: this.snapshot(update.update_id)
+        snapshot
       };
       });
     } catch (error) {
-      if (reservationId) await this.releaseReservation(reservationId);
+      if (reservationId) {
+        this.enqueueInventoryEffect(
+          `release-reservation:${reservationId}`,
+          "RELEASE_RESERVATION",
+          reservationId,
+          null
+        );
+        await this.drainDurableEffectsBestEffort();
+      }
       throw error;
     }
-    const awaiting = result.snapshot?.orders.find((order) => order.status === "AWAITING_PAYMENT");
-    if (reservationId) {
-      if (awaiting) await this.commitReservation(reservationId, String(awaiting.orderId));
-      else await this.releaseReservation(reservationId);
-    }
-    for (const order of result.snapshot?.orders ?? []) {
-      if (order.status === "CANCELLED" || order.status === "EXPIRED") {
-        await this.releaseOrderInventory(String(order.orderId));
-      }
-    }
-    if (awaiting) {
-      const timeout = Number(this.env.PAYMENT_TIMEOUT_MINUTES || "30");
-      const createdAt = new Date(String(awaiting.createdAt)).getTime();
-      if (Number.isFinite(timeout) && timeout > 0 && Number.isFinite(createdAt)) {
-        await this.ctx.storage.setAlarm(createdAt + timeout * 60_000);
-      }
-    }
+    await this.drainDurableEffectsBestEffort();
     return result;
   }
 
@@ -330,58 +446,122 @@ export class TelegramSession extends DurableObject<Env> {
     return this.resolvePayment(orderId, "expire", "system:durable-object-alarm");
   }
 
-  async flushOutbox(outboxId: string): Promise<void> {
+  async flushOutbox(outboxId: string): Promise<{
+    delivered: boolean; error: string | null;
+  }> {
     const row = this.ctx.storage.sql.exec<{
       commands_json: string;
       snapshot_json: string;
       delivered: number;
+      attempts: number;
     }>(
-      "SELECT commands_json, snapshot_json, delivered FROM notification_outbox WHERE outbox_id = ?",
+      `SELECT commands_json, snapshot_json, delivered, attempts
+       FROM notification_outbox WHERE outbox_id = ?`,
       outboxId
     ).toArray()[0];
-    if (!row || row.delivered === 1) return;
-    const snapshot = JSON.parse(row.snapshot_json) as FastPathSnapshot;
-    await this.env.FAST_PATH_SYNC.send({ kind: "fast_path_sync", ...snapshot });
+    if (!row || row.delivered === 1) {
+      await this.scheduleNextAlarm();
+      return { delivered: true, error: null };
+    }
     const commands = JSON.parse(row.commands_json) as TelegramCommand[];
-    for (const command of commands) {
-      const response = await fetch(
-        `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/${command.method}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(command.params),
-          signal: AbortSignal.timeout(5_000)
+    const progress = this.ctx.storage.sql.exec<{ next_command_index: number }>(
+      "SELECT next_command_index FROM notification_progress WHERE outbox_id = ?",
+      outboxId
+    ).toArray()[0];
+    const startIndex = progress?.next_command_index ?? 0;
+    try {
+      await this.drainQueueOutbox();
+      for (let index = startIndex; index < commands.length; index += 1) {
+        const command = commands[index];
+        const response = await fetch(
+          `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/${command.method}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(command.params),
+            signal: AbortSignal.timeout(5_000)
+          }
+        );
+        const payload = await response.json<Record<string, unknown>>().catch(() => null);
+        if (!response.ok || !payload || payload.ok !== true) {
+          const description = payload && typeof payload.description === "string"
+            ? payload.description
+            : `HTTP ${response.status}`;
+          throw new Error(`Telegram ${command.method} failed: ${description}`);
         }
+        this.ctx.storage.sql.exec(
+          `INSERT INTO notification_progress(outbox_id, next_command_index) VALUES (?, ?)
+           ON CONFLICT(outbox_id) DO UPDATE SET next_command_index = excluded.next_command_index`,
+          outboxId,
+          index + 1
+        );
+      }
+    } catch (error) {
+      const attempts = row.attempts + 1;
+      const delayMs = Math.min(60_000, Math.pow(2, attempts) * 1_000);
+      const message = error instanceof Error ? error.message : String(error);
+      this.ctx.storage.sql.exec(
+        `UPDATE notification_outbox
+         SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE outbox_id = ?`,
+        attempts,
+        Date.now() + delayMs,
+        message,
+        outboxId
       );
-      if (!response.ok) throw new Error(`Telegram ${command.method} returned HTTP ${response.status}`);
+      await this.scheduleNextAlarm();
+      return {
+        delivered: false,
+        error: message
+      };
     }
     this.ctx.storage.sql.exec(
-      "UPDATE notification_outbox SET delivered = 1 WHERE outbox_id = ?", outboxId
+      `UPDATE notification_outbox
+       SET delivered = 1, next_attempt_at = 0, last_error = NULL WHERE outbox_id = ?`,
+      outboxId
     );
-    await this.ctx.storage.deleteAlarm();
+    await this.scheduleNextAlarm();
+    return { delivered: true, error: null };
   }
 
   async alarm(): Promise<void> {
+    await this.drainDurableEffectsBestEffort();
     const pendingOutbox = this.ctx.storage.sql.exec<{ outbox_id: string }>(
-      "SELECT outbox_id FROM notification_outbox WHERE delivered = 0 ORDER BY created_at LIMIT 1"
+      `SELECT outbox_id FROM notification_outbox
+       WHERE delivered = 0 AND next_attempt_at <= ? ORDER BY created_at LIMIT 1`,
+      Date.now()
     ).toArray()[0];
     if (pendingOutbox) {
-      await this.flushOutbox(pendingOutbox.outbox_id);
-      return;
+      const delivery = await this.flushOutbox(pendingOutbox.outbox_id);
+      if (!delivery.delivered) {
+        console.error(JSON.stringify({
+          event: "telegram_notification_outbox_pending",
+          outboxId: pendingOutbox.outbox_id,
+          error: delivery.error
+        }));
+      }
     }
     const awaiting = this.ctx.storage.sql.exec<{ record_json: string }>(
       "SELECT record_json FROM orders ORDER BY created_at DESC"
     ).toArray().map((row) => parseRecord(row.record_json))
       .find((order) => order.status === "AWAITING_PAYMENT");
-    if (!awaiting) return;
-    const timeout = Number(this.env.PAYMENT_TIMEOUT_MINUTES || "30");
-    const dueAt = new Date(String(awaiting.createdAt)).getTime() + timeout * 60_000;
-    if (dueAt > Date.now()) {
-      await this.ctx.storage.setAlarm(dueAt);
-      return;
+    if (awaiting) {
+      const timeout = Number(this.env.PAYMENT_TIMEOUT_MINUTES || "30");
+      const dueAt = new Date(String(awaiting.createdAt)).getTime() + timeout * 60_000;
+      if (dueAt <= Date.now()) {
+        const resolution = await this.expirePayment(String(awaiting.orderId));
+        if (resolution.outboxId) {
+          const delivery = await this.flushOutbox(resolution.outboxId);
+          if (!delivery.delivered) {
+            console.error(JSON.stringify({
+              event: "telegram_expiry_notification_pending",
+              orderId: String(awaiting.orderId),
+              error: delivery.error
+            }));
+          }
+        }
+      }
     }
-    const resolution = await this.expirePayment(String(awaiting.orderId));
-    if (resolution.outboxId) await this.flushOutbox(resolution.outboxId);
+    await this.scheduleNextAlarm();
   }
 
   private async resolvePayment(
@@ -395,15 +575,31 @@ export class TelegramSession extends DurableObject<Env> {
         findById(id: string): JsonRecord | null;
       }).findById(orderId);
       if (!existing) return {
-        outcome: "not_found" as const, orderId, status: null, outboxId: null
+        outcome: "not_found" as const, orderId, status: null, outboxId: null,
+        deliveryStatus: null
       };
-      if (existing.status !== "AWAITING_PAYMENT") return {
-        outcome: "already_resolved" as const,
-        orderId,
-        status: String(existing.status),
-        outboxId: null
-      };
+      if (existing.status !== "AWAITING_PAYMENT") {
+        const linkedOutbox = this.ctx.storage.sql.exec<{
+          outbox_id: string; delivered: number;
+        }>(
+          `SELECT links.outbox_id, outbox.delivered
+           FROM order_outboxes links
+           JOIN notification_outbox outbox ON outbox.outbox_id = links.outbox_id
+           WHERE links.order_id = ?`,
+          orderId
+        ).toArray()[0];
+        return {
+          outcome: "already_resolved" as const,
+          orderId,
+          status: String(existing.status),
+          outboxId: linkedOutbox?.delivered === 0 ? linkedOutbox.outbox_id : null,
+          deliveryStatus: linkedOutbox
+            ? linkedOutbox.delivered === 1 ? "delivered" as const : "pending" as const
+            : null
+        };
+      }
       const service = (OrderService as any).create({
+        coreDependencies: { Domain, StateMachine, Billing, Repositories },
         ...repositories,
         getCatalog: () => [],
         createQrContent: () => "",
@@ -419,10 +615,18 @@ export class TelegramSession extends DurableObject<Env> {
         .find((link) => link.platform === "telegram")?.platformUserId || "");
       const commands = (domainResult.outboundMessages as Array<{
         type: string; content: JsonRecord;
-      }>).map((message) => TelegramOutboundRenderer.renderOutboundMessage(message, chatId));
-      const snapshot = this.snapshot(Number(Date.now()));
+      }>).map((message) => TelegramOutboundRenderer.renderOutboundMessage(
+        message,
+        chatId,
+        TelegramInboundMapper
+      ));
+      const snapshot = this.createSnapshot(0);
       if (!snapshot) throw new Error("Payment resolution snapshot is unavailable");
       const outboxId = crypto.randomUUID();
+      this.enqueueQueueMessage(
+        `snapshot:${snapshot.snapshotId}`,
+        { kind: "fast_path_sync", ...snapshot }
+      );
       this.ctx.storage.sql.exec(
         `INSERT INTO notification_outbox(outbox_id, commands_json, snapshot_json, delivered, created_at)
          VALUES (?, ?, ?, 0, ?)`,
@@ -431,17 +635,29 @@ export class TelegramSession extends DurableObject<Env> {
         JSON.stringify(snapshot),
         new Date().toISOString()
       );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO order_outboxes(order_id, outbox_id) VALUES (?, ?)
+         ON CONFLICT(order_id) DO UPDATE SET outbox_id = excluded.outbox_id`,
+        orderId,
+        outboxId
+      );
+      if (action === "expire") {
+        this.enqueueInventoryEffect(
+          `release-order:${orderId}`,
+          "RELEASE_ORDER",
+          null,
+          orderId
+        );
+      }
       return {
         outcome: "resolved" as const,
         orderId,
         status: action === "confirm" ? "PAID" : "EXPIRED",
-        outboxId
+        outboxId,
+        deliveryStatus: "pending" as const
       };
     });
-    if (action === "expire" && result.outcome === "resolved") {
-      await this.releaseOrderInventory(orderId);
-    }
-    if (result.outcome === "resolved") await this.ctx.storage.setAlarm(Date.now() + 1_000);
+    await this.drainDurableEffectsBestEffort();
     return result;
   }
 
@@ -455,6 +671,7 @@ export class TelegramSession extends DurableObject<Env> {
     ).toArray()[0];
     if (!state) return [];
     const record = parseRecord(state.record_json);
+    if (record.currentState !== "CONFIRMING") return [];
     const context = record.contextData as JsonRecord | undefined;
     return Array.isArray(context?.cart) ? context.cart as JsonRecord[] : [];
   }
@@ -514,35 +731,273 @@ export class TelegramSession extends DurableObject<Env> {
        SET status = 'COMMITTED', order_id = ?, updated_at = ?
        WHERE reservation_id = ? AND status = 'RESERVED'`
     ).bind(orderId, new Date().toISOString(), reservationId).run();
+    const rows = await this.env.CATALOG_DB.prepare(
+      "SELECT status, order_id AS orderId FROM inventory_reservations WHERE reservation_id = ?"
+    ).bind(reservationId).all<{ status: string; orderId: string | null }>();
+    if (!rows.results.length || rows.results.some((row) =>
+      row.status !== "COMMITTED" || row.orderId !== orderId
+    )) {
+      throw new Error(`Inventory reservation ${reservationId} could not be committed`);
+    }
   }
 
   private async releaseReservation(reservationId: string): Promise<void> {
-    await this.releaseInventory(
-      "reservation_id = ?", [reservationId]
-    );
+    await this.releaseInventory("reservation", reservationId);
   }
 
   private async releaseOrderInventory(orderId: string): Promise<void> {
-    await this.releaseInventory("order_id = ?", [orderId]);
+    const link = this.ctx.storage.sql.exec<{ reservation_id: string }>(
+      "SELECT reservation_id FROM order_inventory_links WHERE order_id = ?",
+      orderId
+    ).toArray()[0];
+    if (link) await this.releaseInventory("reservation", link.reservation_id);
+    else await this.releaseInventory("order", orderId);
   }
 
-  private async releaseInventory(where: string, bindings: string[]): Promise<void> {
+  private async releaseInventory(scope: "reservation" | "order", value: string): Promise<void> {
     const now = new Date().toISOString();
-    const released = await this.env.CATALOG_DB.prepare(
-      `UPDATE inventory_reservations SET status = 'RELEASED', updated_at = ?
-       WHERE ${where} AND status != 'RELEASED'
-       RETURNING product_id AS productId, business_date AS businessDate, quantity`
-    ).bind(now, ...bindings).all<{
-      productId: string; businessDate: string; quantity: number;
-    }>();
-    if (!released.results.length) return;
-    await this.env.CATALOG_DB.batch(released.results.map((row) =>
+    const column = scope === "reservation" ? "reservation_id" : "order_id";
+    await this.env.CATALOG_DB.batch([
       this.env.CATALOG_DB.prepare(
         `UPDATE daily_inventory
-         SET remaining_quantity = remaining_quantity + ?, updated_at = ?
-         WHERE product_id = ? AND business_date = ?`
-      ).bind(row.quantity, now, row.productId, row.businessDate)
-    ));
+         SET remaining_quantity = remaining_quantity + COALESCE((
+           SELECT SUM(r.quantity) FROM inventory_reservations r
+           WHERE r.${column} = ? AND r.status != 'RELEASED'
+             AND r.product_id = daily_inventory.product_id
+             AND r.business_date = daily_inventory.business_date
+         ), 0), updated_at = ?
+         WHERE EXISTS (
+           SELECT 1 FROM inventory_reservations r
+           WHERE r.${column} = ? AND r.status != 'RELEASED'
+             AND r.product_id = daily_inventory.product_id
+             AND r.business_date = daily_inventory.business_date
+         )`
+      ).bind(value, now, value),
+      this.env.CATALOG_DB.prepare(
+        `UPDATE inventory_reservations SET status = 'RELEASED', updated_at = ?
+         WHERE ${column} = ? AND status != 'RELEASED'`
+      ).bind(now, value)
+    ]);
+  }
+
+  private enqueueInventoryEffect(
+    effectId: string,
+    effectType: "COMMIT_RESERVATION" | "RELEASE_RESERVATION" | "RELEASE_ORDER",
+    reservationId: string | null,
+    orderId: string | null
+  ): void {
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO inventory_effects(
+         effect_id, effect_type, reservation_id, order_id, status, attempts,
+         next_attempt_at, lease_until, created_at
+       ) VALUES (?, ?, ?, ?, 'PENDING', 0, 0, NULL, ?)`,
+      effectId,
+      effectType,
+      reservationId,
+      orderId,
+      new Date().toISOString()
+    );
+  }
+
+  private enqueueQueueMessage(messageId: string, body: JsonRecord): void {
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO queue_outbox(
+         message_id, body_json, published, attempts, next_attempt_at, lease_until, created_at
+       ) VALUES (?, ?, 0, 0, 0, NULL, ?)`,
+      messageId,
+      JSON.stringify(body),
+      new Date().toISOString()
+    );
+  }
+
+  private enqueueOperationsOrder(updateId: number, chatId: string, order: JsonRecord): void {
+    this.enqueueQueueMessage(`operations-order:${String(order.orderId)}`, {
+      kind: "operations_order",
+      updateId,
+      chatId,
+      order: {
+        orderId: String(order.orderId),
+        items: (order.items as JsonRecord[]).map((item) => ({
+          name: String(item.name),
+          quantity: Number(item.quantity),
+          unitPrice: Number(item.unitPrice)
+        })),
+        totalAmount: Number(order.totalAmount)
+      }
+    });
+  }
+
+  private claimInventoryEffect(): {
+    effect_id: string;
+    effect_type: "COMMIT_RESERVATION" | "RELEASE_RESERVATION" | "RELEASE_ORDER";
+    reservation_id: string | null;
+    order_id: string | null;
+    attempts: number;
+  } | null {
+    return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      const row = this.ctx.storage.sql.exec<{
+        effect_id: string;
+        effect_type: "COMMIT_RESERVATION" | "RELEASE_RESERVATION" | "RELEASE_ORDER";
+        reservation_id: string | null;
+        order_id: string | null;
+        attempts: number;
+      }>(
+        `SELECT effect_id, effect_type, reservation_id, order_id, attempts
+         FROM inventory_effects
+         WHERE (status = 'PENDING' AND next_attempt_at <= ?)
+            OR (status = 'PROCESSING' AND lease_until < ?)
+         ORDER BY created_at LIMIT 1`,
+        now,
+        now
+      ).toArray()[0];
+      if (!row) return null;
+      this.ctx.storage.sql.exec(
+        `UPDATE inventory_effects
+         SET status = 'PROCESSING', lease_until = ? WHERE effect_id = ?`,
+        now + 30_000,
+        row.effect_id
+      );
+      return row;
+    });
+  }
+
+  private async drainInventoryEffects(): Promise<void> {
+    for (;;) {
+      const effect = this.claimInventoryEffect();
+      if (!effect) return;
+      try {
+        if (effect.effect_type === "COMMIT_RESERVATION") {
+          if (!effect.reservation_id || !effect.order_id) throw new Error("Invalid commit effect");
+          await this.commitReservation(effect.reservation_id, effect.order_id);
+        } else if (effect.effect_type === "RELEASE_RESERVATION") {
+          if (!effect.reservation_id) throw new Error("Invalid reservation release effect");
+          await this.releaseReservation(effect.reservation_id);
+        } else {
+          if (!effect.order_id) throw new Error("Invalid order release effect");
+          await this.releaseOrderInventory(effect.order_id);
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE inventory_effects
+           SET status = 'DONE', lease_until = NULL, last_error = NULL WHERE effect_id = ?`,
+          effect.effect_id
+        );
+      } catch (error) {
+        const attempts = effect.attempts + 1;
+        const delayMs = Math.min(60_000, Math.pow(2, attempts) * 1_000);
+        this.ctx.storage.sql.exec(
+          `UPDATE inventory_effects
+           SET status = 'PENDING', attempts = ?, next_attempt_at = ?, lease_until = NULL,
+               last_error = ? WHERE effect_id = ?`,
+          attempts,
+          Date.now() + delayMs,
+          error instanceof Error ? error.message : String(error),
+          effect.effect_id
+        );
+        throw error;
+      }
+    }
+  }
+
+  private async drainQueueOutbox(): Promise<void> {
+    for (;;) {
+      const row = this.ctx.storage.transactionSync(() => {
+        const now = Date.now();
+        const candidate = this.ctx.storage.sql.exec<{
+          message_id: string; body_json: string; attempts: number;
+        }>(
+          `SELECT message_id, body_json, attempts FROM queue_outbox
+           WHERE published = 0 AND next_attempt_at <= ?
+             AND (lease_until IS NULL OR lease_until < ?)
+           ORDER BY created_at LIMIT 1`,
+          now,
+          now
+        ).toArray()[0];
+        if (!candidate) return null;
+        this.ctx.storage.sql.exec(
+          "UPDATE queue_outbox SET lease_until = ? WHERE message_id = ?",
+          now + 30_000,
+          candidate.message_id
+        );
+        return candidate;
+      });
+      if (!row) return;
+      try {
+        await this.env.FAST_PATH_SYNC.send(parseRecord(row.body_json));
+        this.ctx.storage.sql.exec(
+          `UPDATE queue_outbox
+           SET published = 1, lease_until = NULL, last_error = NULL WHERE message_id = ?`,
+          row.message_id
+        );
+      } catch (error) {
+        const attempts = row.attempts + 1;
+        const delayMs = Math.min(60_000, Math.pow(2, attempts) * 1_000);
+        this.ctx.storage.sql.exec(
+          `UPDATE queue_outbox
+           SET attempts = ?, next_attempt_at = ?, lease_until = NULL, last_error = ?
+           WHERE message_id = ?`,
+          attempts,
+          Date.now() + delayMs,
+          error instanceof Error ? error.message : String(error),
+          row.message_id
+        );
+        throw error;
+      }
+    }
+  }
+
+  private async drainDurableEffectsBestEffort(): Promise<void> {
+    try {
+      await this.drainInventoryEffects();
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "telegram_inventory_effect_pending",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    }
+    try {
+      await this.drainQueueOutbox();
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "telegram_queue_outbox_pending",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    }
+    await this.scheduleNextAlarm();
+  }
+
+  private async scheduleNextAlarm(): Promise<void> {
+    const now = Date.now();
+    const candidates: number[] = [];
+    const inventory = this.ctx.storage.sql.exec<{ due: number | null }>(
+      `SELECT MIN(CASE WHEN status = 'PROCESSING' THEN lease_until ELSE next_attempt_at END) AS due
+       FROM inventory_effects WHERE status != 'DONE'`
+    ).one();
+    if (inventory.due != null) candidates.push(Math.max(now + 1_000, inventory.due));
+    const queued = this.ctx.storage.sql.exec<{ due: number | null }>(
+      `SELECT MIN(CASE
+         WHEN lease_until IS NOT NULL AND lease_until > next_attempt_at THEN lease_until
+         ELSE next_attempt_at
+       END) AS due FROM queue_outbox WHERE published = 0`
+    ).one();
+    if (queued.due != null) candidates.push(Math.max(now + 1_000, queued.due));
+    const pendingNotification = this.ctx.storage.sql.exec<{ due: number | null }>(
+      "SELECT MIN(next_attempt_at) AS due FROM notification_outbox WHERE delivered = 0"
+    ).one();
+    if (pendingNotification.due != null) {
+      candidates.push(Math.max(now + 1_000, pendingNotification.due));
+    }
+    const awaiting = this.ctx.storage.sql.exec<{ record_json: string }>(
+      "SELECT record_json FROM orders ORDER BY created_at DESC"
+    ).toArray().map((row) => parseRecord(row.record_json))
+      .find((order) => order.status === "AWAITING_PAYMENT");
+    if (awaiting) {
+      const timeout = Number(this.env.PAYMENT_TIMEOUT_MINUTES || "30");
+      const dueAt = new Date(String(awaiting.createdAt)).getTime() + timeout * 60_000;
+      if (Number.isFinite(dueAt)) candidates.push(Math.max(now + 1_000, dueAt));
+    }
+    if (candidates.length) await this.ctx.storage.setAlarm(Math.min(...candidates));
+    else await this.ctx.storage.deleteAlarm();
   }
 
   private adminDraft(chatId: string): AdminDraft | null {
@@ -718,7 +1173,14 @@ export class TelegramSession extends DurableObject<Env> {
     return `${product.name}: tồn hôm nay = ${quantity}.`;
   }
 
-  private snapshot(updateId: number): FastPathSnapshot | null {
+  private nextRevision(): number {
+    return this.ctx.storage.sql.exec<{ revision: number }>(
+      `UPDATE sync_metadata SET revision = revision + 1 WHERE singleton = 1
+       RETURNING revision`
+    ).one().revision;
+  }
+
+  private createSnapshot(updateId: number): FastPathSnapshot | null {
     const customer = this.ctx.storage.sql.exec<{ record_json: string }>(
       "SELECT record_json FROM customers LIMIT 1"
     ).toArray()[0];
@@ -733,6 +1195,10 @@ export class TelegramSession extends DurableObject<Env> {
       "SELECT record_json FROM orders WHERE customer_id = ? ORDER BY created_at ASC", customerId
     ).toArray().map((row) => parseRecord(row.record_json));
     return {
+      schemaVersion: 2,
+      snapshotId: crypto.randomUUID(),
+      customerId,
+      revision: this.nextRevision(),
       updateId,
       customer: customerRecord,
       conversationState: parseRecord(state.record_json),

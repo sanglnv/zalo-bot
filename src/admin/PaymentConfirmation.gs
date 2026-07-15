@@ -17,7 +17,50 @@ function processOrderPayment(orderId, confirmedBy) {
   var fastPath = typeof FastPathPaymentClient !== 'undefined'
     ? FastPathPaymentClient.resolve(orderId, 'confirm', confirmedBy)
     : { handled: false };
+  if (fastPath.outcome === 'infra_error') {
+    try {
+      SheetErrorLogRepository().log({
+        timestamp: new Date().toISOString(),
+        context: {
+          stage: 'fast_path_gateway',
+          orderId: orderId,
+          confirmedBy: confirmedBy
+        },
+        message: fastPath.message || 'Fast-path gateway unavailable',
+        stack: ''
+      });
+    } catch (ignore) {}
+    return {
+      ok: false,
+      reason: 'fast_path_gateway_unavailable',
+      message: fastPath.message || 'Fast-path gateway unavailable'
+    };
+  }
   if (fastPath.handled) {
+    if (fastPath.outcome === 'resolved' && fastPath.deliveryStatus === 'pending') {
+      try {
+        SheetErrorLogRepository().log({
+          timestamp: new Date().toISOString(),
+          context: {
+            stage: 'notification_dispatch',
+            orderId: orderId,
+            confirmedBy: confirmedBy,
+            platformLinks: fastPath.platformLinks || [],
+            fastPath: true
+          },
+          message: fastPath.notificationError || 'Fast-path notification is pending',
+          stack: ''
+        });
+      } catch (ignore) {}
+      return {
+        ok: false,
+        reason: 'confirmed_but_notification_failed',
+        orderId: orderId,
+        platformLinks: fastPath.platformLinks || [],
+        message: fastPath.notificationError || 'Thông báo đang chờ gửi lại',
+        fastPath: true
+      };
+    }
     return fastPath.outcome === 'resolved'
       ? { ok: true, fastPath: true }
       : { ok: false, reason: 'already_resolved', fastPath: true };
@@ -106,6 +149,11 @@ function confirmSelectedOrderPaymentWithoutMetrics() {
     );
   } else if (result.reason === 'already_resolved') {
     ui.alert('Đơn này đã được xác nhận hoặc không còn chờ thanh toán.');
+  } else if (result.reason === 'fast_path_gateway_unavailable') {
+    ui.alert(
+      'Không kết nối được hệ thống Fast Path lúc này. Vui lòng thử lại sau ít phút, ' +
+      'hoặc báo kỹ thuật nếu lặp lại nhiều lần.'
+    );
   } else {
     ui.alert('Có lỗi xảy ra: ' + (result.message || 'Không xác định'));
   }

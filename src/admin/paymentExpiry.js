@@ -57,26 +57,25 @@ function createPaymentExpiryRunner(dependencies) {
     };
     candidates.forEach(function (order) {
       if (typeof dependencies.resolveFastPath === 'function') {
-        try {
-          var fastPath = dependencies.resolveFastPath(order);
-          if (fastPath && fastPath.handled) {
-            if (fastPath.outcome === 'resolved') summary.expired += 1;
-            else summary.resolved += 1;
-            summary.results.push({
-              orderId: order.orderId,
-              ok: fastPath.outcome === 'resolved',
-              reason: fastPath.outcome,
-              fastPath: true
-            });
-            return;
-          }
-        } catch (error) {
-          summary.failed += 1;
-          log(error, 'expire_fast_path_order', order);
+        var fastPath = dependencies.resolveFastPath(order);
+        if (fastPath && fastPath.handled) {
+          if (fastPath.outcome === 'resolved') summary.expired += 1;
+          else summary.resolved += 1;
           summary.results.push({
-            orderId: order.orderId, ok: false, reason: 'fast_path_error', message: error.message
+            orderId: order.orderId,
+            ok: fastPath.outcome === 'resolved',
+            reason: fastPath.outcome,
+            deliveryStatus: fastPath.deliveryStatus || null,
+            fastPath: true
           });
           return;
+        }
+        if (fastPath && fastPath.outcome === 'infra_error') {
+          log(
+            new Error(fastPath.message || 'Fast-path probe failed'),
+            'fast_path_probe_failed',
+            order
+          );
         }
       }
       var expiration;

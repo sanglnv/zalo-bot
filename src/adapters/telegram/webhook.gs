@@ -105,6 +105,49 @@ var TelegramWebhook = (function () {
       } : { chatId: chatId };
     }
 
+    function confirmedOrderSummary(outbound, inbound) {
+      if (!inbound || !inbound.payload || inbound.payload.action !== 'confirm_order') return null;
+      var confirmation = outbound.find(function (message) {
+        return message.type === 'text' && message.content && message.content.orderId != null;
+      });
+      var paymentImage = outbound.find(function (message) {
+        return message.type === 'image' && message.content && message.content.purpose === 'payment_qr';
+      });
+      if (!confirmation || !paymentImage) return null;
+      return {
+        orderId: String(confirmation.content.orderId),
+        amount: Number(confirmation.content.amount || 0)
+      };
+    }
+
+    function notifyOperationsGroup(summary, customerChatId) {
+      var opsChatId = null;
+      try {
+        opsChatId = PropertiesService.getScriptProperties().getProperty('TELEGRAM_OPERATIONS_CHAT_ID');
+      } catch (ignore) {}
+      if (!opsChatId) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn(JSON.stringify({ event: 'operations_notify_skipped', reason: 'not_configured' }));
+        }
+        return;
+      }
+      try {
+        dependencies.client.execute({
+          method: 'sendMessage',
+          params: {
+            chat_id: opsChatId,
+            text: '🔔 ĐƠN MỚI #' + summary.orderId + '\n' +
+              'Khách Telegram: ' + customerChatId + '\n' +
+              'Tổng: ' + Number(summary.amount || 0).toLocaleString('vi-VN') + ' đ\n' +
+              'Trạng thái: Chờ thanh toán\n' +
+              'Xem chi tiết trong Sheet Orders.'
+          }
+        });
+      } catch (error) {
+        logError(error, { stage: 'operations_notify', orderId: summary.orderId });
+      }
+    }
+
     function handleProcessingFailure(error, details) {
       if (details.claimed && details.updateId != null) {
         updateDeliveryStatus(details.updateId, 'failed');
@@ -222,6 +265,7 @@ var TelegramWebhook = (function () {
           });
           return {
             recovery: recoveryFrom(outbound, inbound.platformUserId),
+            confirmedOrderSummary: confirmedOrderSummary(outbound, inbound),
             commands: outbound.map(function (message) {
               return dependencies.renderOutboundMessage(message, inbound.platformUserId);
             })
@@ -231,6 +275,11 @@ var TelegramWebhook = (function () {
           duplicate: transaction.duplicate === true,
           commandCount: transaction.commands.length
         });
+
+        if (!transaction.duplicate && transaction.recovery && transaction.recovery.orderId &&
+            transaction.confirmedOrderSummary) {
+          notifyOperationsGroup(transaction.confirmedOrderSummary, chatId);
+        }
 
         if (transaction.duplicate) {
           return successResponse();

@@ -10,7 +10,7 @@ Phase 2 có fast path thử nghiệm dùng SQLite Durable Object theo từng Tel
 
 Phase 3 lưu catalog lớn trong D1 và đẩy snapshot fast path qua Queue để GAS upsert về Sheets mà không chặn phản hồi khách hàng. Xem [runbook Phase 3](../docs/telegram-fast-path-phase3.md).
 
-Phase 4 chuyển xác nhận thanh toán và hết hạn đơn fast path vào đúng Durable Object theo chat, dùng alarm và notification outbox để giữ trạng thái/notification nhất quán. Xem [runbook Phase 4](../docs/telegram-fast-path-phase4.md).
+Phase 4 chuyển xác nhận thanh toán và hết hạn đơn fast path vào đúng Durable Object theo chat. Domain transaction ghi đồng thời snapshot outbox, inventory effect và notification outbox; alarm retry từng side effect cho tới khi hoàn tất. Xem [runbook Phase 4](../docs/telegram-fast-path-phase4.md).
 
 ## Local verification
 
@@ -30,7 +30,7 @@ npx wrangler queues create zalo-clawbot-telegram
 npx wrangler queues create zalo-clawbot-telegram-dlq
 ```
 
-Thiết lập bốn secret qua prompt tương tác; không đặt giá trị secret trong source hoặc command history:
+Thiết lập sáu secret qua prompt tương tác; không đặt giá trị secret trong source hoặc command history:
 
 ```sh
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
@@ -38,13 +38,15 @@ npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put GAS_WEB_APP_URL
 npx wrangler secret put GAS_GATEWAY_TOKEN
 npx wrangler secret put TELEGRAM_OPERATIONS_CHAT_ID
+npx wrangler secret put TELEGRAM_ADMIN_USER_IDS
 ```
 
 - `GAS_WEB_APP_URL`: Apps Script production `/exec` URL.
 - `TELEGRAM_WEBHOOK_SECRET`: chuỗi ngẫu nhiên 1–256 ký tự chỉ gồm `A-Z`, `a-z`, `0-9`, `_`, `-`; dùng cùng giá trị cho Script Property tương ứng.
 - `GAS_GATEWAY_TOKEN`: secret ngẫu nhiên khác, dùng cùng giá trị cho Script Property tương ứng.
 - `TELEGRAM_BOT_TOKEN`: token BotFather.
-- `TELEGRAM_OPERATIONS_CHAT_ID`: private staff chat receiving DLQ alerts. Add the bot to this chat before deployment.
+- `TELEGRAM_OPERATIONS_CHAT_ID`: chat nhân viên nhận cảnh báo DLQ và tóm tắt đơn mới từ cả normal path lẫn fast path. Thêm bot vào chat trước khi deploy.
+- `TELEGRAM_ADMIN_USER_IDS`: danh sách Telegram **user ID** được phép dùng lệnh quản trị, phân cách bằng dấu phẩy. Lệnh chỉ chạy trong private chat; không dùng group/chat ID cho allowlist này.
 
 Deploy và lưu URL `workers.dev` được Wrangler trả về:
 
@@ -61,6 +63,7 @@ npm run deploy
 2. Gửi `/start`, `catalog`, thêm sản phẩm và bấm callback trên Telegram. Callback phải hết spinner ngay; bot phải trả lời đúng một lần.
 3. Trong Cloudflare Workers Logs, xác nhận `telegram_webhook_healthy`, `gas_gateway_healthy`, rồi xác nhận `telegram_update_queued` và `telegram_update_forwarded` có cùng `updateId` khi test chat.
 4. Theo dõi `telegram_dlq_not_empty`; staff chat cũng nhận cảnh báo chủ động. Nếu xuất hiện, tra `updateId` trong logs và xử lý nguyên nhân GAS trước khi replay thủ công; không tạo consumer tự xoá DLQ.
+5. Trước khi bật pilot, giữ `FAST_PATH_ENABLED=false`, xác nhận snapshot v2 tăng `revision` theo từng customer và mọi `inventory_effects`, `queue_outbox`, `notification_outbox` đều đã được drain. Sau đó mới bật allowlist hẹp và theo dõi log.
 
 Probe không cần secret:
 

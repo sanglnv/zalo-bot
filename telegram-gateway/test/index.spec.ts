@@ -1,4 +1,9 @@
-import { createExecutionContext, env as workerEnv } from "cloudflare:test";
+import {
+  createExecutionContext,
+  env as workerEnv,
+  runDurableObjectAlarm,
+  runInDurableObject,
+} from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type TelegramUpdate } from "../src/index";
 
@@ -48,6 +53,7 @@ function fixture(options: { queueFailure?: boolean; dlqBacklog?: number } = {}) 
     GAS_WEB_APP_URL: "https://script.google.com/macros/s/deployment/exec",
     GAS_GATEWAY_TOKEN: "gas-secret",
     TELEGRAM_OPERATIONS_CHAT_ID: "operations-chat",
+    TELEGRAM_ADMIN_USER_IDS: "admin-user",
     PUBLIC_WEBHOOK_URL: "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
     FAST_PATH_ENABLED: "true",
     PAYMENT_TIMEOUT_MINUTES: "30",
@@ -152,7 +158,13 @@ describe("Telegram webhook ingress", () => {
 
 describe("Telegram Durable Object fast path", () => {
   it("processes a pilot chat directly without publishing to the GAS queue", async () => {
-    const telegramFetch = vi.fn(async () => Response.json({ ok: true, result: {} }));
+    let failPaymentNotification = false;
+    const telegramFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (failPaymentNotification && String(input).includes("/sendMessage")) {
+        return Response.json({ ok: false, description: "forced payment delivery failure" }, { status: 503 });
+      }
+      return Response.json({ ok: true, result: {} });
+    });
     vi.stubGlobal("fetch", telegramFetch);
     await workerEnv.CATALOG_DB.exec(
       "CREATE TABLE IF NOT EXISTS categories (category_id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL, active INTEGER NOT NULL, updated_at TEXT NOT NULL)"
@@ -186,18 +198,21 @@ describe("Telegram Durable Object fast path", () => {
          product_id, business_date, initial_quantity, remaining_quantity, active, updated_at
        ) VALUES ('p1', date('now', '+7 hours'), 2, 2, 1, ?)`
     ).bind(new Date().toISOString()).run();
-    const { environment, queued, synced } = fixture();
+    const { environment, queued } = fixture();
     const pilotEnvironment = {
       ...environment,
       FAST_PATH_ENABLED: "true",
-      FAST_PATH_CHAT_IDS: "7001",
-      TELEGRAM_ADMIN_CHAT_IDS: "7001",
+      FAST_PATH_CHAT_IDS: "7001,-100",
+      TELEGRAM_ADMIN_USER_IDS: "7001",
       VIETQR_BANK_ID: "970422",
       VIETQR_ACCOUNT_NO: "123456789",
       VIETQR_ACCOUNT_NAME: "TEST SHOP",
       VIETQR_TEMPLATE: "compact2",
       VIETQR_TRANSFER_PREFIX: "DH",
     } as unknown as Env;
+    const session = pilotEnvironment.TELEGRAM_SESSIONS.getByName("7001", {
+      locationHint: "apac-se",
+    });
 
     const updates = [
       { update_id: 70010, message: { chat: { id: 7001 }, text: "catalog" } },
@@ -226,14 +241,6 @@ describe("Telegram Durable Object fast path", () => {
         },
       },
       { update_id: 70014, message: { chat: { id: 7001 }, text: "checkout" } },
-      {
-        update_id: 70015,
-        callback_query: {
-          id: "cb-70015",
-          data: "confirm_order",
-          message: { chat: { id: 7001 } },
-        },
-      },
     ];
 
     for (const update of updates) {
@@ -242,15 +249,43 @@ describe("Telegram Durable Object fast path", () => {
       );
       expect(response.status).toBe(200);
     }
+    const concurrentConfirmations = [70015, 700151].map((updateId) => worker.fetch(
+      webhookRequest({
+        update_id: updateId,
+        callback_query: {
+          id: `cb-${updateId}`,
+          data: "confirm_order",
+          message: { chat: { id: 7001 } },
+        },
+      }),
+      pilotEnvironment,
+      createExecutionContext(),
+    ));
+    const confirmationResponses = await Promise.all(concurrentConfirmations);
+    expect(confirmationResponses.map((response) => response.status)).toEqual([200, 200]);
 
     expect(queued).toEqual([]);
-    const snapshots = synced.filter(
+    const durableMessages = await runInDurableObject(session, async (_instance, state) =>
+      state.storage.sql.exec<{ body_json: string }>(
+        "SELECT body_json FROM queue_outbox ORDER BY created_at, message_id"
+      ).toArray().map((row) => JSON.parse(row.body_json) as unknown)
+    );
+    const snapshots = durableMessages.filter(
       (message) => (message as { kind?: string }).kind === "fast_path_sync"
     );
-    const operations = synced.filter(
+    const operations = durableMessages.filter(
       (message) => (message as { kind?: string }).kind === "operations_order"
     );
-    expect(snapshots).toHaveLength(6);
+    expect(snapshots).toHaveLength(7);
+    expect(snapshots.map((message) => (message as { schemaVersion: number }).schemaVersion))
+      .toEqual([2, 2, 2, 2, 2, 2, 2]);
+    expect(snapshots.map(
+      (message) => (message as { revision: number }).revision
+    ).sort((left, right) => left - right))
+      .toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(new Set(snapshots.map(
+      (message) => (message as { snapshotId: string }).snapshotId
+    )).size).toBe(7);
     expect(operations).toEqual([expect.objectContaining({
       kind: "operations_order",
       chatId: "7001",
@@ -259,7 +294,10 @@ describe("Telegram Durable Object fast path", () => {
         totalAmount: 70000,
       }),
     })]);
-    expect(snapshots.at(-1)).toEqual(expect.objectContaining({
+    const orderSnapshot = snapshots.find(
+      (message) => (message as { updateId: number }).updateId === 70015
+    );
+    expect(orderSnapshot).toEqual(expect.objectContaining({
       kind: "fast_path_sync",
       updateId: 70015,
       orders: [expect.objectContaining({ status: "AWAITING_PAYMENT" })],
@@ -268,12 +306,17 @@ describe("Telegram Durable Object fast path", () => {
       "SELECT remaining_quantity AS remainingQuantity FROM daily_inventory WHERE product_id = 'p1'"
     ).first<{ remainingQuantity: number }>();
     expect(inventory?.remainingQuantity).toBe(0);
+    const reservations = await workerEnv.CATALOG_DB.prepare(
+      "SELECT COUNT(*) AS count FROM inventory_reservations WHERE status = 'COMMITTED'"
+    ).first<{ count: number }>();
+    expect(reservations?.count).toBe(1);
     expect(telegramFetch).toHaveBeenCalledWith(
       "https://api.telegram.org/botbot-token/sendPhoto",
       expect.objectContaining({ method: "POST" }),
     );
 
-    const orderId = (snapshots.at(-1) as { orders: Array<{ orderId: string }> }).orders[0].orderId;
+    const orderId = (orderSnapshot as { orders: Array<{ orderId: string }> }).orders[0].orderId;
+    failPaymentNotification = true;
     const paymentResponse = await worker.fetch(
       new Request("https://gateway.example/internal/payment", {
         method: "POST",
@@ -290,16 +333,64 @@ describe("Telegram Durable Object fast path", () => {
     );
     expect(paymentResponse.status).toBe(200);
     expect(await paymentResponse.json()).toEqual(expect.objectContaining({
-      handled: true, outcome: "resolved", status: "PAID",
+      handled: true,
+      outcome: "resolved",
+      status: "PAID",
+      deliveryStatus: "pending",
+      notificationError: expect.stringContaining("forced payment delivery failure"),
+    }));
+    failPaymentNotification = false;
+    await runInDurableObject(session, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE notification_outbox SET next_attempt_at = 0 WHERE delivered = 0"
+      );
+    });
+    expect(await runDurableObjectAlarm(session)).toBe(true);
+    await runInDurableObject(session, async (_instance, state) => {
+      expect(state.storage.sql.exec<{ delivered: number }>(
+        "SELECT delivered FROM notification_outbox"
+      ).one().delivered).toBe(1);
+      expect(state.storage.sql.exec<{ pending: number }>(
+        "SELECT COUNT(*) AS pending FROM inventory_effects WHERE status != 'DONE'"
+      ).one().pending).toBe(0);
+      expect(state.storage.sql.exec<{ pending: number }>(
+        "SELECT COUNT(*) AS pending FROM queue_outbox WHERE published = 0"
+      ).one().pending).toBe(0);
+    });
+    const repeatedPayment = await worker.fetch(
+      new Request("https://gateway.example/internal/payment", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-GAS-Gateway-Token": "gas-secret",
+        },
+        body: JSON.stringify({
+          chatId: "7001", orderId, action: "confirm", actor: "staff@example.com",
+        }),
+      }),
+      pilotEnvironment,
+      createExecutionContext(),
+    );
+    expect(await repeatedPayment.json()).toEqual(expect.objectContaining({
+      outcome: "already_resolved",
+      status: "PAID",
+      deliveryStatus: "delivered",
+      notificationError: null,
     }));
 
     await worker.fetch(
-      webhookRequest({ update_id: 70016, message: { chat: { id: 7001 }, text: "/admin" } }),
+      webhookRequest({
+        update_id: 70016,
+        message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/admin" },
+      }),
       pilotEnvironment,
       createExecutionContext(),
     );
     await worker.fetch(
-      webhookRequest({ update_id: 70017, message: { chat: { id: 7001 }, text: "/ton p1 5" } }),
+      webhookRequest({
+        update_id: 70017,
+        message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/ton p1 5" },
+      }),
       pilotEnvironment,
       createExecutionContext(),
     );
@@ -307,6 +398,40 @@ describe("Telegram Durable Object fast path", () => {
       "SELECT remaining_quantity AS remainingQuantity FROM daily_inventory WHERE product_id = 'p1'"
     ).first<{ remainingQuantity: number }>();
     expect(adjusted?.remainingQuantity).toBe(5);
+
+    await worker.fetch(
+      webhookRequest({
+        update_id: 70018,
+        message: {
+          from: { id: 7001 },
+          chat: { id: -100, type: "group" },
+          text: "/ton p1 9",
+        },
+      }),
+      pilotEnvironment,
+      createExecutionContext(),
+    );
+    const protectedInventory = await workerEnv.CATALOG_DB.prepare(
+      "SELECT remaining_quantity AS remainingQuantity FROM daily_inventory WHERE product_id = 'p1'"
+    ).first<{ remainingQuantity: number }>();
+    expect(protectedInventory?.remainingQuantity).toBe(5);
+
+    await worker.fetch(
+      webhookRequest({
+        update_id: 70019,
+        message: {
+          from: { id: 9999 },
+          chat: { id: 7001, type: "private" },
+          text: "/ton p1 11",
+        },
+      }),
+      pilotEnvironment,
+      createExecutionContext(),
+    );
+    const actorProtectedInventory = await workerEnv.CATALOG_DB.prepare(
+      "SELECT remaining_quantity AS remainingQuantity FROM daily_inventory WHERE product_id = 'p1'"
+    ).first<{ remainingQuantity: number }>();
+    expect(actorProtectedInventory?.remainingQuantity).toBe(5);
   });
 
   it("rejects unauthenticated internal payment operations", async () => {

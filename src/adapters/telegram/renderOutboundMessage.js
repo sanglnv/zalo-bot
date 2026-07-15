@@ -2,7 +2,7 @@
 
 function telegramRendererDependencies() {
   return typeof module !== 'undefined' && module.exports
-    ? require('./mapInboundMessage')
+    ? require('./mapInboundMessage.js')
     : TelegramInboundMapper;
 }
 
@@ -22,14 +22,16 @@ function formatPrice(value) {
  * Pure conversion from a core OutboundMessage to a Telegram Bot API command.
  * @param {{type: string, content: Object}} message
  * @param {string|number} chatId
+ * @param {{encodeCallbackData: function({action: string, productId?: string, categoryId?: string, quantity?: number}): string}=} inboundMapper
  * @returns {{method: string, params: Object}}
  */
-function renderOutboundMessage(message, chatId) {
+function renderOutboundMessage(message, chatId, inboundMapper) {
   if (!message || typeof message !== 'object' || !message.content) {
     throw new TypeError('OutboundMessage must contain content');
   }
   var id = String(chatId);
   var content = message.content;
+  var mapper = inboundMapper || telegramRendererDependencies();
   if (message.type === 'text') {
     if (typeof content.text !== 'string') throw new TypeError('text message content.text must be a string');
     return { method: 'sendMessage', params: { chat_id: id, text: content.text } };
@@ -45,14 +47,14 @@ function renderOutboundMessage(message, chatId) {
           inline_keyboard: content.items.map(function (product) {
             return [{
               text: product.name + ' — ' + formatPrice(product.price),
-              callback_data: telegramRendererDependencies().encodeCallbackData({
+              callback_data: mapper.encodeCallbackData({
                 action: 'view_product', productId: product.productId
               })
             }];
           }).concat(Array.isArray(content.buttons) ? [content.buttons.map(function (button) {
             return {
               text: button.label,
-              callback_data: telegramRendererDependencies().encodeCallbackData(buttonPayload(button))
+              callback_data: mapper.encodeCallbackData(buttonPayload(button))
             };
           })] : [])
         }
@@ -71,7 +73,7 @@ function renderOutboundMessage(message, chatId) {
             if (index % 2 === 0) rows.push([]);
             rows[rows.length - 1].push({
               text: button.label,
-              callback_data: telegramRendererDependencies().encodeCallbackData(buttonPayload(button))
+              callback_data: mapper.encodeCallbackData(buttonPayload(button))
             });
             return rows;
           }, [])

@@ -26,7 +26,7 @@ type FastPathEnvironment = Omit<Env, "FAST_PATH_ENABLED"> & {
   TELEGRAM_SESSIONS: DurableObjectNamespace<TelegramSession>;
   FAST_PATH_ENABLED: string;
   FAST_PATH_CHAT_IDS?: string;
-  TELEGRAM_ADMIN_CHAT_IDS?: string;
+  TELEGRAM_ADMIN_USER_IDS?: string;
   CATALOG_DB: D1Database;
   FAST_PATH_SYNC: Queue<FastPathSyncMessage>;
   VIETQR_BANK_ID?: string;
@@ -297,12 +297,23 @@ function fastPathEnabled(env: FastPathEnvironment, chatId: string | null): boole
   return allowed.includes(chatId);
 }
 
-function telegramAdminEnabled(env: FastPathEnvironment, chatId: string): boolean {
-  return (env.TELEGRAM_ADMIN_CHAT_IDS ?? "")
+function telegramAdminEnabled(env: FastPathEnvironment, update: TelegramUpdate): boolean {
+  const message = update.message as {
+    from?: { id?: string | number };
+    chat?: { type?: string };
+  } | undefined;
+  const callback = update.callback_query as {
+    from?: { id?: string | number };
+    message?: { chat?: { type?: string } };
+  } | undefined;
+  const actorId = message?.from?.id ?? callback?.from?.id;
+  const chatType = message?.chat?.type ?? callback?.message?.chat?.type;
+  if (actorId == null || chatType !== "private") return false;
+  return (env.TELEGRAM_ADMIN_USER_IDS ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean)
-    .includes(chatId);
+    .includes(String(actorId));
 }
 
 async function executeFastPathCommands(
@@ -344,7 +355,7 @@ async function handleFastPath(
     accountName: env.VIETQR_ACCOUNT_NAME ?? "",
     template: env.VIETQR_TEMPLATE || "compact2",
     transferPrefix: env.VIETQR_TRANSFER_PREFIX || "DH"
-  }, telegramAdminEnabled(env, chatId));
+  }, telegramAdminEnabled(env, update));
   log("log", "telegram_fast_path_domain_completed", {
     updateId: update.update_id,
     chatId,
@@ -353,31 +364,6 @@ async function handleFastPath(
     commandCount: result.commands.length,
     domainDurationMs: result.domainDurationMs
   });
-  if (result.snapshot) {
-    await env.FAST_PATH_SYNC.send({ kind: "fast_path_sync", ...result.snapshot });
-  }
-  const inboundAction = (update.callback_query as { data?: unknown } | undefined)?.data;
-  if (!result.duplicate && inboundAction === "confirm_order" && result.snapshot) {
-    const order = [...result.snapshot.orders].reverse().find(
-      (candidate) => candidate.status === "AWAITING_PAYMENT"
-    );
-    if (order) {
-      await env.FAST_PATH_SYNC.send({
-        kind: "operations_order",
-        updateId: update.update_id,
-        chatId,
-        order: {
-          orderId: String(order.orderId),
-          items: (order.items as Array<Record<string, unknown>>).map((item) => ({
-            name: String(item.name),
-            quantity: Number(item.quantity),
-            unitPrice: Number(item.unitPrice)
-          })),
-          totalAmount: Number(order.totalAmount)
-        }
-      } satisfies OperationsOrderMessage);
-    }
-  }
   await executeFastPathCommands(result, env);
   const completedAtMs = Date.now();
   log("log", "telegram_fast_path_completed", {
@@ -416,17 +402,46 @@ async function handlePaymentOperation(
       typeof payload.actor === "string" && payload.actor ? payload.actor : "staff"
     )
     : await session.expirePayment(payload.orderId);
-  if (resolution.outboxId) await session.flushOutbox(resolution.outboxId);
+  let deliveryStatus = resolution.deliveryStatus;
+  let notificationError: string | null = null;
+  if (resolution.outboxId) {
+    try {
+      const delivery = await session.flushOutbox(resolution.outboxId);
+      deliveryStatus = delivery.delivered ? "delivered" : "pending";
+      notificationError = delivery.error;
+      if (delivery.delivered) notificationError = null;
+      else {
+        log("error", "telegram_fast_path_notification_pending", {
+          action: payload.action,
+          orderId: payload.orderId,
+          chatId: payload.chatId,
+          error: notificationError
+        });
+      }
+    } catch (error) {
+      deliveryStatus = "pending";
+      notificationError = errorMessage(error);
+      log("error", "telegram_fast_path_notification_pending", {
+        action: payload.action,
+        orderId: payload.orderId,
+        chatId: payload.chatId,
+        error: notificationError
+      });
+    }
+  }
   log("log", "telegram_fast_path_payment_resolved", {
     action: payload.action,
     orderId: payload.orderId,
     chatId: payload.chatId,
     outcome: resolution.outcome,
-    status: resolution.status
+    status: resolution.status,
+    deliveryStatus
   });
   return Response.json({
     handled: resolution.outcome !== "not_found",
-    ...resolution
+    ...resolution,
+    deliveryStatus,
+    notificationError
   });
 }
 

@@ -158,3 +158,30 @@ test('already-resolved race loser does not block later candidates or log a syste
   assert.equal(summary.results[1].ok, true);
   assert.equal(logs.length, 0);
 });
+
+test('fast-path infrastructure failure falls back to normal expiry', () => {
+  const candidate = order('fallback', 'AWAITING_PAYMENT', '2026-07-13T08:00:00.000Z');
+  const expired = [];
+  const logs = [];
+  const runner = PaymentExpiryRunner.create({
+    orderRepository: { findAwaitingPaymentOlderThan: () => [candidate] },
+    orderService: {
+      expireOrder(orderId) {
+        expired.push(orderId);
+        return { customer: { platformLinks: [] }, outboundMessages: [] };
+      }
+    },
+    resolveFastPath: () => ({
+      handled: false, outcome: 'infra_error', message: 'worker unavailable'
+    }),
+    dispatchNotifications: () => [],
+    errorLogRepository: { log(entry) { logs.push(entry); } },
+    now: () => new Date('2026-07-13T10:00:00.000Z')
+  });
+
+  const summary = runner.scan();
+  assert.deepEqual(expired, ['fallback']);
+  assert.equal(summary.expired, 1);
+  assert.equal(summary.failed, 0);
+  assert.equal(logs[0].context.stage, 'fast_path_probe_failed');
+});

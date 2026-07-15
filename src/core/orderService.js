@@ -2,10 +2,10 @@
 
 function orderServiceDependencies() {
   return typeof module !== 'undefined' && module.exports ? {
-      Domain: require('./domain'),
-      StateMachine: require('./stateMachine'),
-      Billing: require('./billing'),
-      Repositories: require('./repositoryContracts')
+      Domain: require('./domain.js'),
+      StateMachine: require('./stateMachine.js'),
+      Billing: require('./billing.js'),
+      Repositories: require('./repositoryContracts.js')
     } : { Domain: Domain, StateMachine: StateMachine, Billing: Billing, Repositories: Repositories };
 }
 
@@ -60,11 +60,15 @@ UserActionError.prototype.constructor = UserActionError;
  * @param {function(): string} dependencies.createId
  * @param {function(): Date} dependencies.now
  * @param {function(function(): *): *} dependencies.withLock Runs one complete message transaction under a lock
+ * @param {{Domain: Object, StateMachine: Object, Billing: Object, Repositories: Object}=} dependencies.coreDependencies Static dependency bundle for runtimes without CommonJS require
  * @returns {{handleMessage: function(import('./domain').InboundMessage): import('./domain').OutboundMessage[], confirmPayment: function(string, string): Object, expireOrder: function(string): Object}}
  */
 function createOrderService(dependencies) {
-  var d = orderServiceDependencies();
   dependencies = dependencies || {};
+  var d = dependencies.coreDependencies || orderServiceDependencies();
+  ['Domain', 'StateMachine', 'Billing', 'Repositories'].forEach(function (name) {
+    if (!d[name]) throw new TypeError('coreDependencies.' + name + ' is required');
+  });
   d.Repositories.assert(dependencies.orderRepository, d.Repositories.contracts.order, 'orderRepository');
   d.Repositories.assert(dependencies.customerRepository, d.Repositories.contracts.customer, 'customerRepository');
   d.Repositories.assert(

@@ -6,7 +6,9 @@ Phase 3 removes the oversized `CATALOG_JSON` Worker secret. The shared product c
 
 `Telegram → Worker → TelegramSession DO → Telegram API`
 
-After the DO transaction commits, the Worker durably publishes a snapshot to `zalo-clawbot-fast-path-sync`. Its consumer authenticates to GAS and idempotently upserts Customer, ConversationState and Orders into Sheets. Telegram delivery does not wait for GAS execution.
+Trong cùng transaction với thay đổi domain, DO ghi snapshot vào local queue outbox. Sau commit, outbox publish tới `zalo-clawbot-fast-path-sync`; alarm retry nếu Queue tạm lỗi. Consumer xác thực tới GAS và upsert Customer, ConversationState và Orders vào Sheets. Telegram delivery không chờ GAS execution.
+
+Snapshot schema v2 gồm `snapshotId`, `customerId` và `revision` tăng đơn điệu trong từng DO/customer. GAS ghi revision cuối vào `FastPathSyncState`, bỏ qua snapshot trùng hoặc cũ, và áp dụng customer/state/orders dưới cùng Script Lock. Vì vậy Queue có giao lại hoặc đảo thứ tự cũng không thể rollback Sheets về state cũ.
 
 ## One-time infrastructure
 
@@ -37,7 +39,7 @@ The current export shape `{ "id", "name", "basePrice" }` is also accepted and no
 ## Deployment order
 
 1. Apply D1 migration and import the catalog.
-2. Run Apps Script `setupSystem()` so `FastPathSyncedUpdates` exists, then push/deploy GAS.
+2. Run Apps Script `setupSystem()` so `FastPathSyncedUpdates` và `FastPathSyncState` exist, then push/deploy GAS.
 3. Create the sync queue.
 4. Run gateway checks and deploy the Worker with `FAST_PATH_ENABLED` still false.
 5. Enable only allowlisted test chats and verify `telegram_fast_path_synced` logs.
@@ -45,6 +47,6 @@ The current export shape `{ "id", "name", "basePrice" }` is also accepted and no
 
 ## Failure and rollback
 
-Sync messages retry with exponential backoff and eventually enter the existing Telegram DLQ. Snapshot upserts and `FastPathSyncedUpdates` make replay idempotent. A sync outage does not slow the customer reply, but operations must resolve the DLQ before staff confirms payment.
+Sync messages retry with exponential backoff and eventually enter the existing Telegram DLQ. `snapshotId` dedupe cùng per-customer revision guard làm replay idempotent và chặn out-of-order overwrite. A sync outage does not slow the customer reply, but operations must resolve the DLQ before staff confirms payment.
 
 Set `FAST_PATH_ENABLED` to `false` and deploy to route all new updates back through Queue → GAS. D1 and Durable Object data are preserved for investigation.

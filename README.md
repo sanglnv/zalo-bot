@@ -108,6 +108,7 @@ Configure these under **Apps Script → Project Settings → Script Properties**
 | `TELEGRAM_WEBHOOK_URL` | Deployed Cloudflare Worker URL; Telegram must never point directly at GAS |
 | `TELEGRAM_WEBHOOK_SECRET` | Random Telegram `secret_token`; same value is stored as a Worker secret |
 | `GAS_GATEWAY_TOKEN` | Separate random gateway-to-GAS token; same value is stored as a Worker secret |
+| `TELEGRAM_OPERATIONS_CHAT_ID` | Optional staff group/private chat for new-order notifications on the normal Telegram path; missing value disables only this notification |
 | `PAYMENT_TIMEOUT_MINUTES` | Optional unpaid-order timeout; defaults to `30` |
 
 Example catalog value:
@@ -259,6 +260,8 @@ The staff workflow reports three outcomes distinctly:
 - Confirmation succeeds but notification delivery fails: the order is already `PAID`; the UI explicitly asks staff to notify the customer manually, and `ErrorLogs` records `stage: "notification_dispatch"`, `orderId`, `customerId`, and `platformLinks`.
 
 This separation is required when another channel is added to the notification registry in Phase 5: an adapter outage must never make a committed payment appear unconfirmed.
+
+For a Telegram fast-path order, GAS first asks the Worker/DO to resolve payment. An infrastructure failure returns `fast_path_gateway_unavailable`, is logged under `stage: "fast_path_gateway"`, and does **not** fall through to mutate a potentially stale Sheets mirror. If the DO commits `PAID` but Telegram delivery is pending, staff receives the same explicit “confirmed but notification failed” recovery message. Expiry is intentionally different: an unavailable fast-path probe is logged and the normal Sheets expiry scan continues so stale legacy/mirrored orders are not left open indefinitely.
 
 Do not replace this workflow with a simple `onEdit` trigger. Simple triggers cannot use services that require authorization, while this workflow reads another spreadsheet, identifies the user, and calls the Bot API. Google documents this distinction in its [simple trigger](https://developers.google.com/apps-script/guides/triggers/) and [installable trigger](https://developers.google.com/apps-script/guides/triggers/installable) guides.
 

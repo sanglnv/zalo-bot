@@ -19,7 +19,7 @@ jobs:
       - name: Install gateway dependencies
         working-directory: telegram-gateway
         run: npm ci
-      - name: Test gateway
+      - name: Verify gateway
         working-directory: telegram-gateway
         env:
           TELEGRAM_WEBHOOK_SECRET: ci-test
@@ -27,7 +27,5 @@ jobs:
           GAS_WEB_APP_URL: https://example.com
           GAS_GATEWAY_TOKEN: ci-test
           TELEGRAM_OPERATIONS_CHAT_ID: ci-test
-        run: npm run test:run
-      - name: Type-check gateway
-        working-directory: telegram-gateway
-        run: npm run typecheck
+          TELEGRAM_ADMIN_USER_IDS: ci-test
+        run: npm run check

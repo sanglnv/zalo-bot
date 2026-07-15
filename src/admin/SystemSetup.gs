@@ -19,6 +19,7 @@ var SystemSetup = (function () {
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],
     ['ProcessedUpdates', ['updateId', 'processedAt', 'deliveryStatus']],
     ['FastPathSyncedUpdates', ['updateId', 'syncedAt']],
+    ['FastPathSyncState', ['customerId', 'lastRevision', 'lastSnapshotId', 'syncedAt']],
     ['ZaloProcessedUpdates', ['messageId', 'processedAt', 'deliveryStatus']],
     ['ErrorLogs', ['timestamp', 'context', 'message', 'stack']],
     ['OperationMetrics', ['timestamp', 'operation', 'durationMs']]

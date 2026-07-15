@@ -25,15 +25,21 @@ function setup(setupOptions = {}) {
 
   global.PropertiesService = {
     getScriptProperties: () => ({
-      getProperty: (name) => name === 'TELEGRAM_BOT_TOKEN' ? 'test-token' : null
+      getProperty: (name) => name === 'TELEGRAM_BOT_TOKEN'
+        ? 'test-token'
+        : name === 'TELEGRAM_OPERATIONS_CHAT_ID' ? (setupOptions.opsChatId || null) : null
     })
   };
   global.UrlFetchApp = {
     fetch(url, options) {
       const method = url.slice(url.lastIndexOf('/') + 1);
-      fetchCalls.push({ url, options, params: JSON.parse(options.payload) });
+      const params = JSON.parse(options.payload);
+      fetchCalls.push({ url, options, params });
       if (method === setupOptions.failMethod) {
         return { getResponseCode: () => 500, getContentText: () => '{"ok":false,"description":"forced"}' };
+      }
+      if (setupOptions.failOperations && params.chat_id === setupOptions.opsChatId) {
+        return { getResponseCode: () => 500, getContentText: () => '{"ok":false,"description":"ops forced"}' };
       }
       return { getResponseCode: () => 200, getContentText: () => '{"ok":true,"result":{}}' };
     }
@@ -256,4 +262,41 @@ test('internal errors are logged and webhook still returns success', () => {
   assert.equal(response.mimeType, 'text/plain');
   assert.equal(f.errors.length, 1);
   assert.match(f.errors[0].message, /JSON/);
+});
+
+test('confirm_order notifies operations once while status and duplicates do not', () => {
+  const f = setup({ opsChatId: 'ops-1' });
+  f.post(message(500, 'catalog'));
+  f.post(callback(501, 'cb-add', 'add_item:p1:1'));
+  f.post(message(502, 'checkout'));
+  const confirmation = callback(503, 'cb-confirm', 'confirm_order');
+  f.post(confirmation);
+  f.post(confirmation);
+  f.post(message(504, 'status'));
+
+  const operations = f.fetchCalls.filter((call) => call.params.chat_id === 'ops-1');
+  assert.equal(operations.length, 1);
+  assert.match(operations[0].params.text, /ĐƠN MỚI #id-2/);
+  assert.match(operations[0].params.text, /35\.000 đ/);
+  assert.match(operations[0].params.text, /Chờ thanh toán/);
+});
+
+test('operations notification is optional and failure is isolated from customer delivery', () => {
+  const withoutOps = setup();
+  withoutOps.post(message(510, 'catalog'));
+  withoutOps.post(callback(511, 'cb-add', 'add_item:p1:1'));
+  withoutOps.post(message(512, 'checkout'));
+  assert.equal(withoutOps.post(callback(513, 'cb-confirm', 'confirm_order')).text, 'OK');
+  assert.equal(withoutOps.fetchCalls.some((call) =>
+    call.params.chat_id != null && String(call.params.chat_id) !== '777'
+  ), false);
+
+  const brokenOps = setup({ opsChatId: 'ops-fail', failOperations: true });
+  brokenOps.post(message(520, 'catalog'));
+  brokenOps.post(callback(521, 'cb-add', 'add_item:p1:1'));
+  brokenOps.post(message(522, 'checkout'));
+  const response = brokenOps.post(callback(523, 'cb-confirm', 'confirm_order'));
+  assert.equal(response.text, 'OK');
+  assert.equal(brokenOps.processed.get('523'), 'delivered');
+  assert.ok(brokenOps.errors.some((entry) => entry.context.stage === 'operations_notify'));
 });
