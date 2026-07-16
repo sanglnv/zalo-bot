@@ -30,7 +30,7 @@ npx wrangler queues create zalo-clawbot-telegram
 npx wrangler queues create zalo-clawbot-telegram-dlq
 ```
 
-Thiết lập sáu secret qua prompt tương tác; không đặt giá trị secret trong source hoặc command history:
+Thiết lập chín secret qua prompt tương tác; không đặt giá trị secret trong source hoặc command history:
 
 ```sh
 npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
@@ -39,6 +39,9 @@ npx wrangler secret put GAS_WEB_APP_URL
 npx wrangler secret put GAS_GATEWAY_TOKEN
 npx wrangler secret put TELEGRAM_OPERATIONS_CHAT_ID
 npx wrangler secret put TELEGRAM_ADMIN_USER_IDS
+npx wrangler secret put VIETQR_BANK_ID
+npx wrangler secret put VIETQR_ACCOUNT_NO
+npx wrangler secret put VIETQR_ACCOUNT_NAME
 ```
 
 - `GAS_WEB_APP_URL`: Apps Script production `/exec` URL.
@@ -47,6 +50,23 @@ npx wrangler secret put TELEGRAM_ADMIN_USER_IDS
 - `TELEGRAM_BOT_TOKEN`: token BotFather.
 - `TELEGRAM_OPERATIONS_CHAT_ID`: chat nhân viên nhận cảnh báo DLQ và tóm tắt đơn mới từ cả normal path lẫn fast path. Thêm bot vào chat trước khi deploy.
 - `TELEGRAM_ADMIN_USER_IDS`: danh sách Telegram **user ID** được phép dùng lệnh quản trị, phân cách bằng dấu phẩy. Lệnh chỉ chạy trong private chat; không dùng group/chat ID cho allowlist này.
+- `VIETQR_BANK_ID`, `VIETQR_ACCOUNT_NO`, `VIETQR_ACCOUNT_NAME`: bắt buộc cho fast path — `requireFastPathConfig` trong `fastpath.ts` kiểm tra cả ba cho **mọi** update (không chỉ đơn hàng cần QR), thiếu một trong ba sẽ làm toàn bộ fast path lỗi 503 im lặng với khách. `VIETQR_TEMPLATE`/`VIETQR_TRANSFER_PREFIX` là optional (mặc định `compact2`/`DH`), có thể set bằng `wrangler secret put` nếu cần khác mặc định.
+
+### Lệnh quản trị catalog
+
+Các lệnh chỉ chạy trong private chat của user có ID nằm trong `TELEGRAM_ADMIN_USER_IDS`:
+
+- `/kho` hoặc `/kho CAT_ID`: xem `PRODUCT_ID`, trạng thái bán và tồn hôm nay.
+- `/tat PRODUCT_ID` / `/bat PRODUCT_ID`: tắt hoặc mở bán món.
+- `/ton PRODUCT_ID SỐ_LƯỢNG`: đặt tồn của ngày hiện tại.
+- `/themon`: thêm món theo luồng tên → giá → danh mục → tồn.
+- `/suamon PRODUCT_ID`: sửa tên → giá của món hiện có; gửi `-` ở một bước để giữ nguyên giá trị hiện tại.
+- `/thanhtoan`: khách dùng trong chat riêng để nhận QR của đơn đang chờ; admin dùng trong group vận hành bằng cách reply thông báo `ĐƠN MỚI`. Admin cũng có thể dùng dạng đầy đủ `/thanhtoan CHAT_ID ORDER_ID`.
+- `/huyadmin`: hủy luồng thêm/sửa đang dở.
+
+Flow vận hành đơn Telegram fast path: khách xác nhận → bot giữ tồn và báo group chuẩn bị món → admin reply thông báo đơn bằng `/thanhtoan` → bot gửi QR cho đúng chat khách → nhân viên xác nhận tiền theo quy trình thanh toán hiện có. Lệnh trong group chỉ được chấp nhận khi group trùng `TELEGRAM_OPERATIONS_CHAT_ID` và người gửi nằm trong `TELEGRAM_ADMIN_USER_IDS`.
+
+Khi khách gửi `/start`, Worker chỉ gửi **một** message ảnh `public/welcome-order-flow.png` từ static assets. Caption chào mừng và ba thao tác **Xem danh mục**, **Trạng thái đơn**, **Trợ giúp** nằm chung dưới ảnh; không gửi thêm message chữ riêng. URL ảnh được tạo từ `PUBLIC_WEBHOOK_URL`.
 
 Deploy và lưu URL `workers.dev` được Wrangler trả về:
 

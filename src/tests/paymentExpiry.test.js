@@ -159,7 +159,7 @@ test('already-resolved race loser does not block later candidates or log a syste
   assert.equal(logs.length, 0);
 });
 
-test('fast-path infrastructure failure skips expiry and retries next scan', () => {
+test('fast-path infrastructure failure falls back to normal expiry instead of skipping', () => {
   const candidate = order('fallback', 'AWAITING_PAYMENT', '2026-07-13T08:00:00.000Z');
   const expired = [];
   const logs = [];
@@ -179,19 +179,12 @@ test('fast-path infrastructure failure skips expiry and retries next scan', () =
     now: () => new Date('2026-07-13T10:00:00.000Z')
   });
 
-  const firstSummary = runner.scan();
-  const secondSummary = runner.scan();
-  assert.deepEqual(expired, []);
-  assert.equal(firstSummary.expired, 0);
-  assert.equal(firstSummary.skipped, 1);
-  assert.equal(firstSummary.failed, 0);
-  assert.deepEqual(firstSummary.results, [{
-    orderId: 'fallback', ok: false, reason: 'fast_path_probe_failed'
-  }]);
-  assert.equal(secondSummary.scanned, 1);
-  assert.equal(secondSummary.expired, 0);
-  assert.equal(secondSummary.skipped, 1);
-  assert.equal(candidate.status, 'AWAITING_PAYMENT');
-  assert.equal(logs.length, 2);
+  const summary = runner.scan();
+  assert.deepEqual(expired, ['fallback']);
+  assert.equal(summary.expired, 1);
+  assert.equal(summary.skipped, 0);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.results[0].ok, true);
+  assert.equal(logs.length, 1);
   assert.equal(logs[0].context.stage, 'fast_path_probe_failed');
 });

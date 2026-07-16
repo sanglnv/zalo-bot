@@ -57,6 +57,11 @@ function fixture(options: { queueFailure?: boolean; dlqBacklog?: number } = {}) 
     PUBLIC_WEBHOOK_URL: "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
     FAST_PATH_ENABLED: "true",
     PAYMENT_TIMEOUT_MINUTES: "30",
+    VIETQR_BANK_ID: "970422",
+    VIETQR_ACCOUNT_NO: "123456789",
+    VIETQR_ACCOUNT_NAME: "TEST SHOP",
+    VIETQR_TEMPLATE: "compact2",
+    VIETQR_TRANSFER_PREFIX: "DH",
     TELEGRAM_SESSIONS: workerEnv.TELEGRAM_SESSIONS,
     CATALOG_DB: workerEnv.CATALOG_DB,
     FAST_PATH_SYNC: {
@@ -107,10 +112,15 @@ describe("Telegram webhook ingress", () => {
   });
 
   it("durably enqueues a valid update before returning OK", async () => {
+    // Fast path is global once FAST_PATH_ENABLED="true" (no more per-chat
+    // allowlist), so the only way traffic still reaches the Queue -> GAS path
+    // in production is with fast path turned off. Assert that path directly
+    // instead of relying on a chat falling outside a now-removed allowlist.
     const { environment, queued } = fixture();
+    const queueOnlyEnvironment = { ...environment, FAST_PATH_ENABLED: "false" } as Env;
     const response = await worker.fetch(
       webhookRequest({ update_id: 10, message: { chat: { id: 7 }, text: "catalog" } }),
-      environment,
+      queueOnlyEnvironment,
       createExecutionContext(),
     );
     expect(response.status).toBe(200);
@@ -203,6 +213,7 @@ describe("Telegram Durable Object fast path", () => {
       ...environment,
       FAST_PATH_ENABLED: "true",
       TELEGRAM_ADMIN_USER_IDS: "7001",
+      TELEGRAM_OPERATIONS_CHAT_ID: "-100",
       VIETQR_BANK_ID: "970422",
       VIETQR_ACCOUNT_NO: "123456789",
       VIETQR_ACCOUNT_NAME: "TEST SHOP",
@@ -248,6 +259,7 @@ describe("Telegram Durable Object fast path", () => {
       );
       expect(response.status).toBe(200);
     }
+    telegramFetch.mockClear();
     const concurrentConfirmations = [70015, 700151].map((updateId) => worker.fetch(
       webhookRequest({
         update_id: updateId,
@@ -309,12 +321,60 @@ describe("Telegram Durable Object fast path", () => {
       "SELECT COUNT(*) AS count FROM inventory_reservations WHERE status = 'COMMITTED'"
     ).first<{ count: number }>();
     expect(reservations?.count).toBe(1);
+    expect(telegramFetch.mock.calls.some(([input]) =>
+      String(input).includes("/sendPhoto")
+    )).toBe(false);
+
+    const orderId = (orderSnapshot as { orders: Array<{ orderId: string }> }).orders[0].orderId;
+    const customerQrResponse = await worker.fetch(
+      webhookRequest({
+        update_id: 700152,
+        message: {
+          from: { id: 7001 },
+          chat: { id: 7001, type: "private" },
+          text: "/thanhtoan",
+        },
+      }),
+      fastPathEnvironment,
+      createExecutionContext(),
+    );
+    expect(customerQrResponse.status).toBe(200);
+    const customerQrRequest = telegramFetch.mock.calls.find(([input]) =>
+      String(input).includes("/sendPhoto")
+    )?.[1] as RequestInit;
+    expect(JSON.parse(String(customerQrRequest.body))).toEqual(expect.objectContaining({
+      chat_id: "7001",
+      caption: expect.stringContaining(orderId),
+    }));
+
+    telegramFetch.mockClear();
+    const qrRequestResponse = await worker.fetch(
+      webhookRequest({
+        update_id: 700153,
+        message: {
+          from: { id: 7001 },
+          chat: { id: -100, type: "group" },
+          text: "/thanhtoan",
+          reply_to_message: {
+            text: `🔔 ĐƠN MỚI #${orderId}\nKhách Telegram: 7001\n\nTrạng thái: Đang chuẩn bị`,
+          },
+        },
+      }),
+      fastPathEnvironment,
+      createExecutionContext(),
+    );
+    expect(qrRequestResponse.status).toBe(200);
     expect(telegramFetch).toHaveBeenCalledWith(
       "https://api.telegram.org/botbot-token/sendPhoto",
       expect.objectContaining({ method: "POST" }),
     );
-
-    const orderId = (orderSnapshot as { orders: Array<{ orderId: string }> }).orders[0].orderId;
+    const qrRequest = telegramFetch.mock.calls.find(([input]) =>
+      String(input).includes("/sendPhoto")
+    )?.[1] as RequestInit;
+    expect(JSON.parse(String(qrRequest.body))).toEqual(expect.objectContaining({
+      chat_id: "7001",
+      caption: expect.stringContaining(orderId),
+    }));
     failPaymentNotification = true;
     const paymentResponse = await worker.fetch(
       new Request("https://gateway.example/internal/payment", {
@@ -377,6 +437,34 @@ describe("Telegram Durable Object fast path", () => {
       notificationError: null,
     }));
 
+    telegramFetch.mockClear();
+    const startResponse = await worker.fetch(
+      webhookRequest({
+        update_id: 700159,
+        message: { chat: { id: 7001, type: "private" }, text: "/start" },
+      }),
+      fastPathEnvironment,
+      createExecutionContext(),
+    );
+    expect(startResponse.status).toBe(200);
+    const welcomeCalls = telegramFetch.mock.calls.filter(([input]) =>
+      String(input).includes("/sendPhoto")
+    );
+    expect(welcomeCalls).toHaveLength(1);
+    const welcomeRequest = welcomeCalls[0][1] as RequestInit;
+    expect(JSON.parse(String(welcomeRequest.body))).toEqual(expect.objectContaining({
+      chat_id: "7001",
+      photo: "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev/welcome-order-flow.png",
+      caption: "Xin chào! Xem trước quy trình đặt món và chọn thao tác bên dưới.",
+      reply_markup: { inline_keyboard: [
+        [{ text: "🍽 Xem danh mục", callback_data: "catalog" }],
+        [
+          { text: "📦 Trạng thái đơn", callback_data: "status" },
+          { text: "❓ Trợ giúp", callback_data: "help" },
+        ],
+      ] },
+    }));
+
     await worker.fetch(
       webhookRequest({
         update_id: 70016,
@@ -397,6 +485,21 @@ describe("Telegram Durable Object fast path", () => {
       "SELECT remaining_quantity AS remainingQuantity FROM daily_inventory WHERE product_id = 'p1'"
     ).first<{ remainingQuantity: number }>();
     expect(adjusted?.remainingQuantity).toBe(5);
+
+    for (const update of [
+      { update_id: 700171, message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/suamon p1" } },
+      { update_id: 700172, message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "Cà phê sữa" } },
+      { update_id: 700173, message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "42000" } },
+    ]) {
+      const response = await worker.fetch(
+        webhookRequest(update), fastPathEnvironment, createExecutionContext()
+      );
+      expect(response.status).toBe(200);
+    }
+    const editedProduct = await workerEnv.CATALOG_DB.prepare(
+      "SELECT name, price FROM products WHERE product_id = 'p1'"
+    ).first<{ name: string; price: number }>();
+    expect(editedProduct).toEqual({ name: "Cà phê sữa", price: 42000 });
 
     await worker.fetch(
       webhookRequest({
@@ -448,6 +551,20 @@ describe("Telegram Durable Object fast path", () => {
   });
 
   it("routes every chat through fast path when globally enabled", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, result: {} })));
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS categories (category_id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL, active INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS products (product_id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL, is_available INTEGER NOT NULL, sort_order INTEGER NOT NULL, updated_at TEXT NOT NULL, category_id TEXT NOT NULL DEFAULT 'CAT_OTHER', category_name TEXT NOT NULL DEFAULT 'Khác')"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS daily_inventory (product_id TEXT NOT NULL, business_date TEXT NOT NULL, initial_quantity INTEGER NOT NULL CHECK(initial_quantity >= 0), remaining_quantity INTEGER NOT NULL CHECK(remaining_quantity >= 0), active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, PRIMARY KEY(product_id, business_date))"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS inventory_reservations (reservation_id TEXT NOT NULL, product_id TEXT NOT NULL, business_date TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0), status TEXT NOT NULL DEFAULT 'RESERVED', order_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(reservation_id, product_id))"
+    );
+
     const { environment, queued } = fixture();
     const fastPathEnvironment = {
       ...environment,
@@ -507,6 +624,8 @@ describe("GAS queue consumer", () => {
     expect(body.text).toContain("🔔 ĐƠN MỚI #DH31");
     expect(body.text).toContain("Coffee × 2 — 70.000 đ");
     expect(body.text).toContain("Tổng: 70.000 đ");
+    expect(body.text).toContain("Trạng thái: Đang chuẩn bị");
+    expect(body.text).toContain("/thanhtoan 7001 DH31");
   });
 
   it("forwards the original update with gateway authentication and acknowledges success", async () => {

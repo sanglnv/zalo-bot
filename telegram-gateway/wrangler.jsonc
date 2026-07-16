@@ -9,6 +9,10 @@
   "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
 
+  "assets": {
+    "directory": "./public"
+  },
+
   "vars": {
     "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
     "FAST_PATH_ENABLED": "true",
@@ -99,7 +103,10 @@
       "GAS_WEB_APP_URL",
       "GAS_GATEWAY_TOKEN",
       "TELEGRAM_OPERATIONS_CHAT_ID",
-      "TELEGRAM_ADMIN_USER_IDS"
+      "TELEGRAM_ADMIN_USER_IDS",
+      "VIETQR_BANK_ID",
+      "VIETQR_ACCOUNT_NO",
+      "VIETQR_ACCOUNT_NAME"
     ]
   }
 }

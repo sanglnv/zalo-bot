@@ -73,6 +73,13 @@ export interface PaymentResolution {
   deliveryStatus: "delivered" | "pending" | null;
 }
 
+export interface PaymentQrRequest {
+  outcome: "ready" | "already_resolved" | "not_found";
+  orderId: string;
+  status: string | null;
+  qrUrl: string | null;
+}
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonRecord | JsonValue[];
 export type JsonRecord = { [key: string]: JsonValue };
@@ -206,6 +213,33 @@ export class TelegramSession extends DurableObject<Env> {
         updated_at TEXT NOT NULL
       );
     `);
+    this.migrateLegacySchema();
+  }
+
+  // Durable Objects created before notification_outbox gained retry/backoff
+  // columns (attempts, next_attempt_at, last_error) still have the older
+  // table shape: `CREATE TABLE IF NOT EXISTS` never alters an existing table,
+  // so those instances are stuck on the old schema forever unless patched here.
+  private migrateLegacySchema(): void {
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(notification_outbox)")
+      .toArray()
+      .map((row) => row.name);
+    if (!columns.includes("attempts")) {
+      this.ctx.storage.sql.exec(
+        "ALTER TABLE notification_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+      );
+    }
+    if (!columns.includes("next_attempt_at")) {
+      this.ctx.storage.sql.exec(
+        "ALTER TABLE notification_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0"
+      );
+    }
+    if (!columns.includes("last_error")) {
+      this.ctx.storage.sql.exec(
+        "ALTER TABLE notification_outbox ADD COLUMN last_error TEXT"
+      );
+    }
   }
 
   async process(
@@ -358,6 +392,16 @@ export class TelegramSession extends DurableObject<Env> {
             TelegramInboundMapper
           ) as TelegramCommand
         );
+        if (inbound.payload?.action === "confirm_order") {
+          commands = commands.filter((command) => command.method !== "sendPhoto");
+          commands.push({
+            method: "sendMessage",
+            params: {
+              chat_id: inbound.platformUserId,
+              text: "Đơn đã được xác nhận. Nhân viên đang chuẩn bị món. Bạn có thể gửi /thanhtoan để nhận QR, hoặc chờ nhân viên gửi khi đơn sẵn sàng."
+            }
+          });
+        }
       } catch (error) {
         const userError = error as { customerMessage?: unknown };
         if (typeof userError.customerMessage !== "string") throw error;
@@ -440,6 +484,36 @@ export class TelegramSession extends DurableObject<Env> {
 
   async confirmPayment(orderId: string, confirmedBy: string): Promise<PaymentResolution> {
     return this.resolvePayment(orderId, "confirm", confirmedBy);
+  }
+
+  async requestPaymentQr(
+    orderId: string | null,
+    config: FastPathConfig
+  ): Promise<PaymentQrRequest> {
+    requireFastPathConfig(config);
+    const row = orderId
+      ? this.ctx.storage.sql.exec<{ record_json: string }>(
+          "SELECT record_json FROM orders WHERE order_id = ?",
+          orderId
+        ).toArray()[0]
+      : this.ctx.storage.sql.exec<{ record_json: string }>(
+          "SELECT record_json FROM orders ORDER BY created_at DESC LIMIT 1"
+        ).toArray()[0];
+    if (!row) {
+      return { outcome: "not_found", orderId: orderId ?? "", status: null, qrUrl: null };
+    }
+    const order = parseRecord(row.record_json);
+    const resolvedOrderId = String(order.orderId);
+    const status = String(order.status);
+    if (status !== "AWAITING_PAYMENT") {
+      return { outcome: "already_resolved", orderId: resolvedOrderId, status, qrUrl: null };
+    }
+    return {
+      outcome: "ready",
+      orderId: resolvedOrderId,
+      status,
+      qrUrl: paymentQr(config, order)
+    };
   }
 
   async expirePayment(orderId: string): Promise<PaymentResolution> {
@@ -1046,6 +1120,7 @@ export class TelegramSession extends DurableObject<Env> {
           text: "Quản lý menu hôm nay:",
           reply_markup: { inline_keyboard: [
             [{ text: "➕ Thêm món", callback_data: "admin_add" }],
+            [{ text: "✏️ Sửa tên / giá", callback_data: "admin_edit" }],
             [{ text: "📦 Xem tồn", callback_data: "admin_inventory" }],
             [{ text: "⏸ Bật / tắt món", callback_data: "admin_toggle" }]
           ] }
@@ -1061,6 +1136,25 @@ export class TelegramSession extends DurableObject<Env> {
     }
     if (action === "admin_toggle") {
       return this.adminMessage(chatId, "Dùng /tat PRODUCT_ID để ngừng bán hoặc /bat PRODUCT_ID để mở bán lại.");
+    }
+    if (command === "/suamon" || action === "admin_edit") {
+      const productId = text.split(/\s+/)[1];
+      if (!productId) {
+        return this.adminMessage(chatId, "Cú pháp: /suamon PRODUCT_ID\nDùng /kho để xem PRODUCT_ID.");
+      }
+      const product = await this.env.CATALOG_DB.prepare(
+        "SELECT name, price FROM products WHERE product_id = ?"
+      ).bind(productId).first<{ name: string; price: number }>();
+      if (!product) return this.adminMessage(chatId, "Không tìm thấy món. Dùng /kho để kiểm tra PRODUCT_ID.");
+      this.saveAdminDraft(chatId, "EDIT_NAME", {
+        productId,
+        currentName: product.name,
+        currentPrice: product.price
+      });
+      return this.adminMessage(
+        chatId,
+        `Đang sửa ${productId}\nTên hiện tại: ${product.name}\nNhập tên mới, hoặc gửi - để giữ nguyên.`
+      );
     }
     if (command === "/ton") {
       const parts = text.split(/\s+/);
@@ -1099,6 +1193,37 @@ export class TelegramSession extends DurableObject<Env> {
         `${row.isAvailable ? "✅" : "⏸"} ${row.productId} · ${row.name} · ${row.remainingQuantity == null ? "chưa đặt tồn" : `còn ${row.remainingQuantity}`}`
       );
       return this.adminMessage(chatId, lines.length ? lines.join("\n").slice(0, 4000) : "Không có món phù hợp.");
+    }
+
+    if (draft?.step === "EDIT_NAME") {
+      const name = text === "-" ? String(draft.data.currentName) : text.trim();
+      if (!name) return this.adminMessage(chatId, "Tên món không được để trống. Nhập tên mới hoặc gửi - để giữ nguyên.");
+      this.saveAdminDraft(chatId, "EDIT_PRICE", { ...draft.data, name });
+      return this.adminMessage(
+        chatId,
+        `Giá hiện tại: ${Number(draft.data.currentPrice).toLocaleString("vi-VN")} đ\nNhập giá mới (chỉ nhập số), hoặc gửi - để giữ nguyên.`
+      );
+    }
+    if (draft?.step === "EDIT_PRICE") {
+      const price = text === "-"
+        ? Number(draft.data.currentPrice)
+        : Number(text.replace(/[^0-9]/g, ""));
+      if (!Number.isInteger(price) || price <= 0) {
+        return this.adminMessage(chatId, "Giá không hợp lệ. Ví dụ: 32000, hoặc gửi - để giữ nguyên.");
+      }
+      const productId = String(draft.data.productId);
+      const result = await this.env.CATALOG_DB.prepare(
+        "UPDATE products SET name = ?, price = ?, updated_at = ? WHERE product_id = ?"
+      ).bind(String(draft.data.name), price, new Date().toISOString(), productId).run();
+      if (!result.meta.changes) {
+        this.clearAdminDraft(chatId);
+        return this.adminMessage(chatId, "Món không còn tồn tại. Dùng /kho để kiểm tra lại.");
+      }
+      this.clearAdminDraft(chatId);
+      return this.adminMessage(
+        chatId,
+        `Đã cập nhật ${productId}\nTên: ${draft.data.name}\nGiá: ${price.toLocaleString("vi-VN")} đ`
+      );
     }
 
     if (draft?.step === "ADD_NAME" && text) {

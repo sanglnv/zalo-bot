@@ -77,14 +77,9 @@ function createPaymentExpiryRunner(dependencies) {
             'fast_path_probe_failed',
             order
           );
-          summary.skipped += 1;
-          summary.results.push({
-            orderId: order.orderId,
-            ok: false,
-            reason: 'fast_path_probe_failed'
-          });
-          // Keep the order awaiting payment so the next scan can retry the probe.
-          return;
+          // Do not return here: fall through to the normal expireOrder flow below,
+          // same as before Fast Path existed. Skipping the order would leave it
+          // stuck AWAITING_PAYMENT indefinitely whenever the Worker is unreachable.
         }
       }
       var expiration;

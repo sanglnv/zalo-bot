@@ -38,6 +38,7 @@ function validTelegramGateway(e) {
 function routedPostWithoutMetrics(e) {
   var explicit = e && e.parameter && e.parameter.platform;
   if (explicit === 'zalo') return doZaloPost(e);
+  if (explicit === 'admin') return doAdminPost(e);
   if (explicit === 'telegram') {
     // Apps Script web apps cannot reliably set an HTTP status code. Return a
     // distinct body so the queue consumer can reject and retry authentication

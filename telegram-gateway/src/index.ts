@@ -75,7 +75,10 @@ function operationsOrderText(message: OperationsOrderMessage): string {
     ...lines,
     "",
     `Tổng: ${formatVnd(message.order.totalAmount)}`,
-    "Trạng thái: Chờ thanh toán"
+    "Trạng thái: Đang chuẩn bị",
+    "",
+    "Khi món sẵn sàng, reply tin nhắn này bằng /thanhtoan để gửi QR cho khách.",
+    `Hoặc dùng: /thanhtoan ${message.chatId} ${message.order.orderId}`
   ].join("\n");
 }
 
@@ -310,11 +313,90 @@ function telegramAdminEnabled(env: FastPathEnvironment, update: TelegramUpdate):
     .includes(String(actorId));
 }
 
-async function executeFastPathCommands(
-  result: FastPathResult,
+function telegramAdminActorId(
+  env: FastPathEnvironment,
+  update: TelegramUpdate
+): string | null {
+  const message = update.message as { from?: { id?: string | number } } | undefined;
+  const actorId = message?.from?.id;
+  if (actorId == null) return null;
+  const normalized = String(actorId);
+  return (env.TELEGRAM_ADMIN_USER_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(normalized) ? normalized : null;
+}
+
+function paymentQrAdminRequest(
+  env: FastPathEnvironment,
+  update: TelegramUpdate
+): { customerChatId: string; orderId: string; operationsChatId: string } | null {
+  const message = update.message as {
+    from?: { id?: string | number };
+    chat?: { id?: string | number; type?: string };
+    text?: string;
+    reply_to_message?: { text?: string };
+  } | undefined;
+  if (!message || telegramAdminActorId(env, update) == null) return null;
+  const operationsChatId = message.chat?.id == null ? "" : String(message.chat.id);
+  const isPrivate = message.chat?.type === "private";
+  if (!isPrivate && operationsChatId !== String(env.TELEGRAM_OPERATIONS_CHAT_ID)) return null;
+  const parts = String(message.text ?? "").trim().split(/\s+/);
+  if (parts[0]?.toLowerCase().split("@")[0] !== "/thanhtoan") return null;
+  if (parts[1] && parts[2]) {
+    return { customerChatId: parts[1], orderId: parts[2], operationsChatId };
+  }
+  const repliedText = message.reply_to_message?.text ?? "";
+  const customerChatId = repliedText.match(/^Khách Telegram:\s*(\S+)$/m)?.[1];
+  const orderId = repliedText.match(/^🔔 ĐƠN MỚI #(\S+)$/m)?.[1];
+  return customerChatId && orderId
+    ? { customerChatId, orderId, operationsChatId }
+    : null;
+}
+
+function paymentQrCustomerRequest(
+  update: TelegramUpdate
+): {
+  customerChatId: string;
+  orderId: string | null;
+  responseChatId: string;
+  requestedBy: "customer";
+} | null {
+  const message = update.message as {
+    chat?: { id?: string | number; type?: string };
+    text?: string;
+  } | undefined;
+  if (!message || message.chat?.type !== "private" || message.chat.id == null) return null;
+  const parts = String(message.text ?? "").trim().split(/\s+/);
+  if (parts[0]?.toLowerCase().split("@")[0] !== "/thanhtoan") return null;
+  const chatId = String(message.chat.id);
+  return {
+    customerChatId: chatId,
+    orderId: parts[1] || null,
+    responseChatId: chatId,
+    requestedBy: "customer"
+  };
+}
+
+function isPaymentQrCommand(update: TelegramUpdate): boolean {
+  const message = update.message as { text?: string } | undefined;
+  return String(message?.text ?? "").trim().split(/\s+/)[0]
+    ?.toLowerCase().split("@")[0] === "/thanhtoan";
+}
+
+function isStartCommand(update: TelegramUpdate): boolean {
+  const message = update.message as { text?: string } | undefined;
+  const command = String(message?.text ?? "").trim().split(/\s+/)[0]
+    ?.toLowerCase().split("@")[0];
+  return command === "/start" || command === "start";
+}
+
+async function sendTelegramCommands(
+  commands: Array<{ method: string; params: Record<string, unknown> }>,
   env: FastPathEnvironment
 ): Promise<void> {
-  for (const command of result.commands) {
+  for (const command of commands) {
     const response = await fetch(
       `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${command.method}`,
       {
@@ -332,6 +414,13 @@ async function executeFastPathCommands(
       throw new Error(`Telegram ${command.method} failed: ${description}`);
     }
   }
+}
+
+async function executeFastPathCommands(
+  result: FastPathResult,
+  env: FastPathEnvironment
+): Promise<void> {
+  await sendTelegramCommands(result.commands, env);
 }
 
 async function handleFastPath(
@@ -358,6 +447,29 @@ async function handleFastPath(
     commandCount: result.commands.length,
     domainDurationMs: result.domainDurationMs
   });
+  if (isStartCommand(update)) {
+    const welcomeImageUrl = new URL(
+      "/welcome-order-flow.png",
+      env.PUBLIC_WEBHOOK_URL
+    ).toString();
+    result.commands = [{
+      method: "sendPhoto",
+      params: {
+        chat_id: chatId,
+        photo: welcomeImageUrl,
+        caption: "Xin chào! Xem trước quy trình đặt món và chọn thao tác bên dưới.",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🍽 Xem danh mục", callback_data: "catalog" }],
+            [
+              { text: "📦 Trạng thái đơn", callback_data: "status" },
+              { text: "❓ Trợ giúp", callback_data: "help" }
+            ]
+          ]
+        }
+      }
+    }];
+  }
   await executeFastPathCommands(result, env);
   const completedAtMs = Date.now();
   log("log", "telegram_fast_path_completed", {
@@ -492,6 +604,77 @@ export default {
       durationMs: authenticatedAtMs - receivedAtMs
     });
 
+    const fastEnv = env as FastPathEnvironment;
+    if (isPaymentQrCommand(update)) {
+      const adminRequest = paymentQrAdminRequest(fastEnv, update);
+      const customerRequest = adminRequest ? null : paymentQrCustomerRequest(update);
+      const paymentRequest = adminRequest
+        ? {
+            customerChatId: adminRequest.customerChatId,
+            orderId: adminRequest.orderId as string | null,
+            responseChatId: adminRequest.operationsChatId,
+            requestedBy: "admin" as const
+          }
+        : customerRequest;
+      const commandChatId = telegramChatId(update);
+      if (!paymentRequest) {
+        if (commandChatId) {
+          await sendTelegramCommands([{
+            method: "sendMessage",
+            params: {
+              chat_id: commandChatId,
+              text: "Không thể xác định đơn. Khách dùng /thanhtoan trong chat riêng; admin reply thông báo ĐƠN MỚI bằng /thanhtoan hoặc dùng /thanhtoan CHAT_ID ORDER_ID."
+            }
+          }], fastEnv);
+        }
+        return new Response("OK", { status: 200 });
+      }
+      const session = fastEnv.TELEGRAM_SESSIONS.getByName(
+        paymentRequest.customerChatId,
+        { locationHint: "apac-se" }
+      );
+      const resolution = await session.requestPaymentQr(paymentRequest.orderId, {
+        bankId: fastEnv.VIETQR_BANK_ID ?? "",
+        accountNo: fastEnv.VIETQR_ACCOUNT_NO ?? "",
+        accountName: fastEnv.VIETQR_ACCOUNT_NAME ?? "",
+        template: fastEnv.VIETQR_TEMPLATE || "compact2",
+        transferPrefix: fastEnv.VIETQR_TRANSFER_PREFIX || "DH"
+      });
+      const resolvedOrderId = resolution.orderId || paymentRequest.orderId || "không xác định";
+      const acknowledgement = resolution.outcome === "ready"
+        ? `Đã gửi QR cho khách ${paymentRequest.customerChatId} · đơn ${resolvedOrderId}.`
+        : resolution.outcome === "already_resolved"
+          ? resolution.status === "EXPIRED"
+            ? `Đơn ${resolvedOrderId} đã hết hạn. Vui lòng đặt lại đơn mới để thanh toán.`
+            : `Không gửi QR: đơn ${resolvedOrderId} đang ở trạng thái ${resolution.status}.`
+          : "Không tìm thấy đơn nào có thể thanh toán. Vui lòng đặt món và xác nhận đơn trước.";
+      const customerCommands = resolution.outcome === "ready" && resolution.qrUrl
+        ? [{
+            method: "sendPhoto",
+            params: {
+              chat_id: paymentRequest.customerChatId,
+              photo: resolution.qrUrl,
+              caption: `Đơn ${resolvedOrderId}. Vui lòng quét QR để thanh toán.`
+            }
+          }]
+        : [];
+      const responseCommands = paymentRequest.requestedBy === "admin" || resolution.outcome !== "ready"
+        ? [{
+          method: "sendMessage",
+          params: { chat_id: paymentRequest.responseChatId, text: acknowledgement }
+        }]
+        : [];
+      await sendTelegramCommands([...customerCommands, ...responseCommands], fastEnv);
+      log("log", "telegram_payment_qr_requested", {
+        updateId: update.update_id,
+        orderId: resolvedOrderId,
+        customerChatId: paymentRequest.customerChatId,
+        requestedBy: paymentRequest.requestedBy,
+        outcome: resolution.outcome
+      });
+      return new Response("OK", { status: 200 });
+    }
+
     // Stop the callback spinner at the edge, before waiting for a GAS cold start.
     try {
       if (await answerCallback(update, env)) {
@@ -505,7 +688,6 @@ export default {
       });
     }
 
-    const fastEnv = env as FastPathEnvironment;
     const chatId = telegramChatId(update);
     if (fastPathEnabled(fastEnv, chatId)) {
       try {

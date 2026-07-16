@@ -170,7 +170,16 @@ Kỹ thuật mock dùng xuyên suốt: `require.extensions['.gs'] = require.exte
 5. Áp dụng nguyên vẹn 5 pattern ở Mục 5 — review sẽ từ chối nếu thiếu bất kỳ pattern nào.
 6. Không sửa `src/core/` trừ khi thực sự cần thêm domain concept mới (hiếm khi cần cho adapter thuần).
 
-## 11. Giới hạn đã biết / việc chưa làm
+## 11.5. API admin cho công cụ vận hành (OpenClaw...)
+
+`src/admin/AdminApi.gs` mở route `platform=admin` trên cùng Web app, tách secret
+riêng (`ADMIN_API_TOKEN`, không dùng chung `GAS_GATEWAY_TOKEN`). Action hỗ trợ:
+`list_pending`, `get_order`, `confirm_payment` (tái dùng `processOrderPayment`
+— cùng 1 code path với menu Sheet), `get_catalog`. Xem
+`docs/openclaw-admin-integration.md` để nối với OpenClaw (trợ lý cá nhân tự
+host qua Telegram/WhatsApp) làm công cụ vận hành cho chủ shop.
+
+## 12. Giới hạn đã biết / việc chưa làm
 
 - Lock toàn cục GAS serialize *toàn bộ* traffic (mọi platform, mọi thao tác) — chấp nhận được ở quy mô nhỏ hiện tại, cần đánh giá lại nếu traffic tăng (xem `OperationMetrics`).
 - `PAID → DONE` (hoàn tất/giao hàng) chưa có caller — quyết định có chủ đích, xem `docs/state-machine-audit.md`.
