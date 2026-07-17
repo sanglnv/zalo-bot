@@ -39,6 +39,20 @@ curl -sS -X POST "<WEB_APP_URL>?platform=admin&admin_token=<ADMIN_API_TOKEN>&act
 
 Kỳ vọng `{"ok":true,"orders":[...]}` (mảng rỗng nếu chưa có đơn nào chờ).
 
+**Gotcha đã gặp thực tế:** `clasp push` chỉ cập nhật code trong project, **không**
+tự cập nhật deployment Web app đang chạy — URL `/exec` vẫn phục vụ đúng
+version đã pin lúc deploy. Sau mỗi lần `clasp push` có đổi code liên quan tới
+route `platform=admin` (hoặc bất kỳ route nào), phải vào **Deploy → Manage
+deployments → Edit (bút chì) → Version: New version → Deploy** thì URL mới
+chạy code mới. Thiếu bước này, `curl` vẫn trả về `OK` (fallback mặc định của
+`webhookRouter.gs`) như thể route chưa tồn tại, dễ nhầm là code sai.
+
+Một gotcha khác khi test bằng `curl`: GAS Web app luôn trả `302 Moved
+Temporarily` trỏ sang `script.googleusercontent.com` — đây là hành vi bình
+thường (hàm đã chạy xong, redirect chỉ để lấy nội dung output), **phải thêm
+cờ `-L`** vào `curl` để follow redirect, nếu không sẽ chỉ thấy trang HTML
+"Moved Temporarily" thay vì JSON thật.
+
 ## 2. Phía OpenClaw — cài skill
 
 1. Cài OpenClaw trên máy bạn (xem [Get started](https://docs.openclaw.ai/start/getting-started)) nếu chưa có:
@@ -87,12 +101,27 @@ Nhắn qua kênh chat cá nhân đã kết nối OpenClaw (Telegram là nhanh nh
 Chi tiết từng action, tham số, và cách xử lý lỗi/response nằm trong
 `docs/openclaw-skill/SKILL.md`.
 
+## `get_catalog` đọc từ đâu (đã sửa sau một lần phát hiện lệch dữ liệu)
+
+Ban đầu `get_catalog` chỉ đọc Script Property `CATALOG_JSON` — hoá ra đây là
+bản dữ liệu **transitional**, không phải nguồn thật khi Telegram fast path
+đang bật (`FAST_PATH_ENABLED=true`, xem `docs/telegram-fast-path-phase3.md`):
+nguồn thật là D1 (`zalo-clawbot-catalog`) mà Cloudflare Worker đọc trực tiếp.
+
+Đã sửa: `adminGetCatalog()` (`src/admin/AdminApi.gs`) giờ gọi
+`POST <TELEGRAM_WEBHOOK_URL>/internal/catalog` (endpoint mới trong
+`telegram-gateway/src/index.ts`, xác thực bằng header `X-GAS-Gateway-Token` +
+`GAS_GATEWAY_TOKEN` — tái dùng đúng secret đã có, không cần secret mới) để đọc
+D1 trực tiếp. Chỉ khi Worker không phản hồi được mới rơi về `CATALOG_JSON` như
+cũ. Response luôn có field `source` (`"d1_fast_path"` hoặc
+`"catalog_json_fallback"`) để phân biệt.
+
 ## Giới hạn phạm vi (cố tình)
 
 - Không có action hủy/hết hạn đơn thủ công — vẫn để trigger tự động
   (`scanAndExpireStalePayments`, mỗi 10 phút) xử lý như hiện tại.
 - Không sửa catalog hay cấu hình VietQR qua skill này — vẫn làm trực tiếp
-  trong Apps Script Script Properties.
+  trong D1 / lệnh admin Telegram `/kho` hiện có.
 - `ADMIN_API_TOKEN` là một secret phẳng (so sánh timing-safe, không phải
   OAuth) — phù hợp quy mô 1 chủ shop dùng riêng. Nếu sau này cần nhiều nhân
   viên với quyền khác nhau, cân nhắc thay bằng token theo từng người + ghi

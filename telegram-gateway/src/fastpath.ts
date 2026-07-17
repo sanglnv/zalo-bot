@@ -110,7 +110,7 @@ function requireFastPathConfig(config: FastPathConfig): void {
   }
 }
 
-function vietnamBusinessDate(now = new Date()): string {
+export function vietnamBusinessDate(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Ho_Chi_Minh",
     year: "numeric",

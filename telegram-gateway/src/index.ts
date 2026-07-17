@@ -1,6 +1,7 @@
 import {
   TelegramSession,
   telegramChatId,
+  vietnamBusinessDate,
   type FastPathResult,
   type FastPathSnapshot
 } from "./fastpath";
@@ -484,6 +485,44 @@ async function handleFastPath(
   return new Response("OK", { status: 200 });
 }
 
+interface AdminCatalogProduct {
+  productId: string;
+  name: string;
+  price: number;
+  isAvailable: boolean;
+  categoryId: string;
+  categoryName: string;
+  remainingQuantity: number | null;
+}
+
+async function handleCatalogQuery(
+  request: Request,
+  env: FastPathEnvironment
+): Promise<Response> {
+  if (!(await secretsEqual(request.headers.get("X-GAS-Gateway-Token"), env.GAS_GATEWAY_TOKEN))) {
+    return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  const businessDate = vietnamBusinessDate();
+  const rows = await env.CATALOG_DB.prepare(
+    `SELECT p.product_id AS productId, p.name, p.price,
+            p.is_available AS isAvailable, p.category_id AS categoryId,
+            c.name AS categoryName, i.remaining_quantity AS remainingQuantity
+     FROM products p
+     JOIN categories c ON c.category_id = p.category_id
+     LEFT JOIN daily_inventory i
+       ON i.product_id = p.product_id AND i.business_date = ?
+     ORDER BY c.sort_order, p.sort_order, p.product_id`
+  ).bind(businessDate).all<{
+    productId: string; name: string; price: number; isAvailable: number;
+    categoryId: string; categoryName: string; remainingQuantity: number | null;
+  }>();
+  const catalog: AdminCatalogProduct[] = rows.results.map((product) => ({
+    ...product,
+    isAvailable: product.isAvailable === 1
+  }));
+  return Response.json({ ok: true, businessDate, source: "d1", catalog });
+}
+
 async function handlePaymentOperation(
   request: Request,
   env: FastPathEnvironment
@@ -563,6 +602,14 @@ export default {
       } catch (error) {
         log("error", "telegram_fast_path_payment_failed", { error: errorMessage(error) });
         return Response.json({ handled: false, error: "operation_failed" }, { status: 500 });
+      }
+    }
+    if (new URL(request.url).pathname === "/internal/catalog") {
+      try {
+        return await handleCatalogQuery(request, env as FastPathEnvironment);
+      } catch (error) {
+        log("error", "telegram_admin_catalog_query_failed", { error: errorMessage(error) });
+        return Response.json({ ok: false, error: "operation_failed" }, { status: 500 });
       }
     }
 

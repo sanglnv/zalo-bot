@@ -1,5 +1,26 @@
 # OpenClaw — cấu hình 2 agent tách biệt (ops vs FAQ khách)
 
+> ## ⚠️ Sự cố thực tế đã xảy ra — đọc trước khi làm theo file này
+>
+> Có lần token bot `owner` trong `openclaw.json` bị gõ/dán nhầm thành đúng
+> token của `@SUNKACAFEBOT` (bot đặt hàng thật, đang có webhook trỏ về
+> Cloudflare Worker → GAS). Hậu quả: OpenClaw polling (`getUpdates`) và GAS
+> webhook tranh nhau trên cùng 1 token — Telegram tự huỷ webhook
+> (`telegramWebhook.status` chuyển thành `"misconfigured"`, `url: ""`), khách
+> hàng thật gửi tin vào bot đặt hàng **không được xử lý** cho tới khi phát
+> hiện và `registerWebhook(false)` lại.
+>
+> **Trước khi set bất kỳ giá trị nào vào `channels.telegram.accounts.owner.botToken`
+> hoặc `.faq.botToken`, chạy lệnh này để xác nhận token đó KHÔNG PHẢI token
+> đang chạy webhook GAS:**
+> ```sh
+> node -e "console.log(require('/Users/sunka/Projects/Zalo Clawbot/.clasp.json'))"
+> ```
+> rồi vào Apps Script → Project Settings → Script Properties, so sánh
+> `TELEGRAM_BOT_TOKEN` ở đó với token định dùng cho OpenClaw — **phải khác
+> nhau hoàn toàn**. Sau khi bật lại/đổi token OpenClaw, luôn chạy `healthCheck()`
+> trên GAS ngay để xác nhận `telegramWebhook.status === "ok"`.
+
 Đây là cấu hình thật cho `~/.openclaw/openclaw.json`, thay cho cách cài "chung
 1 agent" ở hai doc trước (`docs/openclaw-admin-integration.md`,
 `docs/openclaw-customer-faq.md`). Lý do cần tách, xem lại phần trả lời rủi ro
@@ -39,10 +60,16 @@ an toàn thông tin: agent FAQ nhận tin từ người lạ (khách), agent ops
         // Chỉ skill vận hành — không thấy skill FAQ dù cùng thư mục gốc skills/
         skills: ["zalo-clawbot-ops"],
         tools: {
-          profile: "coding",
-          // exec cần thiết để curl vào Admin API; browser/canvas/nodes không
-          // cần cho tác vụ này nên chặn luôn, giảm bề mặt tấn công.
-          deny: ["browser", "canvas", "nodes"],
+          // "message" phải khai rõ trong allow — global profile "coding"
+          // không tự bao gồm tool nhắn tin, thiếu dòng này bot sẽ câm lặng
+          // dù nhận được tin (đã xác nhận qua `openclaw doctor`).
+          allow: ["message"],
+          // exec (group:runtime, kế thừa từ profile "coding") cần thiết để
+          // curl vào Admin API. browser/canvas/nodes không cần nên chặn.
+          // write/edit/apply_patch cũng chặn luôn — skill chỉ cần đọc/gọi
+          // API, không cần sửa file nào; giảm bề mặt tấn công nếu bị prompt
+          // injection qua kênh Telegram cá nhân.
+          deny: ["browser", "canvas", "nodes", "write", "edit", "apply_patch"],
         },
       },
       {
@@ -54,7 +81,8 @@ an toàn thông tin: agent FAQ nhận tin từ người lạ (khách), agent ops
         // Sandbox toàn phần vì đây là agent nhận tin từ người lạ (khách).
         sandbox: { mode: "all", scope: "agent" },
         tools: {
-          profile: "minimal",
+          // Bắt buộc khai rõ, xem chú thích ở agent "ops" phía trên.
+          allow: ["message"],
           deny: [
             "group:runtime", // exec, process, code_execution
             "group:fs",      // read, write, edit, apply_patch
@@ -116,10 +144,30 @@ cp docs/openclaw-skill/sunka-cafe-faq/SKILL.md ~/.openclaw/skills/sunka-cafe-faq
 
 ## Biến môi trường (chỉ agent `ops` cần)
 
-Export ở nơi tiến trình Gateway chạy (shell profile hoặc service env),
-**tuyệt đối không đặt trong `openclaw.json`** vì file đó không phải chỗ lưu
-secret:
+**Quan trọng (đã xác nhận thực tế trên macOS):** nếu Gateway chạy như service
+nền (`openclaw onboard --install-daemon` tạo LaunchAgent
+`~/Library/LaunchAgents/ai.openclaw.gateway.plist`), lệnh `export` trong
+Terminal **không** tới được tiến trình daemon đó — daemon có môi trường riêng.
+Skill sẽ báo "needs setup" mãi (`openclaw skills list`) dù bạn export đúng,
+vì daemon không thấy biến. Phải set biến môi trường **trực tiếp vào file
+plist**:
 
+```sh
+PLIST=~/Library/LaunchAgents/ai.openclaw.gateway.plist
+
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$PLIST" 2>/dev/null
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:ZALO_CLAWBOT_WEB_APP_URL string <WEB_APP_URL>" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:ZALO_CLAWBOT_ADMIN_TOKEN string <ADMIN_API_TOKEN>" "$PLIST"
+
+launchctl unload "$PLIST"
+launchctl load "$PLIST"
+```
+
+Xác nhận lại bằng `openclaw skills list` — `zalo-clawbot-ops` phải chuyển
+thành `✓ ready`.
+
+Nếu Gateway chạy trực tiếp trong 1 phiên shell (không cài daemon), `export`
+bình thường trong shell đó trước khi `openclaw gateway restart` là đủ:
 ```sh
 export ZALO_CLAWBOT_WEB_APP_URL="<WEB_APP_URL>"
 export ZALO_CLAWBOT_ADMIN_TOKEN="<ADMIN_API_TOKEN>"

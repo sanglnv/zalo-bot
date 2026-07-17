@@ -49,6 +49,7 @@ test.beforeEach(() => {
   installProperties({ ADMIN_API_TOKEN: 'admin-secret' });
   global.recordDuration = (_operation, fn) => fn();
   global.SheetErrorLogRepository = () => ({ log() {} });
+  delete global.UrlFetchApp;
 });
 
 test('rejects requests with a missing or wrong admin token', () => {
@@ -168,7 +169,51 @@ test('confirm_payment delegates to the existing processOrderPayment path', () =>
   assert.deepEqual(calls, [{ orderId: 'o1', confirmedBy: 'openclaw:sang' }]);
 });
 
-test('get_catalog reads from TelegramRuntime', () => {
+test('get_catalog reads the live D1 catalog via the Telegram gateway when available', () => {
+  installProperties({
+    ADMIN_API_TOKEN: 'admin-secret',
+    TELEGRAM_WEBHOOK_URL: 'https://telegram-gateway.example.workers.dev/',
+    GAS_GATEWAY_TOKEN: 'gateway-secret'
+  });
+  const calls = [];
+  global.UrlFetchApp = {
+    fetch(url, options) {
+      calls.push({ url, options });
+      return {
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          ok: true,
+          source: 'd1',
+          catalog: [{ productId: 'p1', name: 'Cà phê', price: 35000, isAvailable: true }]
+        })
+      };
+    }
+  };
+  global.TelegramRuntime = { loadCatalog: () => { throw new Error('should not be used'); } };
+
+  const response = AdminApi.doAdminPostWithoutMetrics({
+    parameter: { action: 'get_catalog', admin_token: 'admin-secret' }
+  });
+
+  assert.deepEqual(readJsonResponse(response), {
+    ok: true,
+    source: 'd1_fast_path',
+    catalog: [{ productId: 'p1', name: 'Cà phê', price: 35000, isAvailable: true }]
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://telegram-gateway.example.workers.dev/internal/catalog');
+  assert.equal(calls[0].options.headers['X-GAS-Gateway-Token'], 'gateway-secret');
+});
+
+test('get_catalog falls back to TelegramRuntime (CATALOG_JSON) when the gateway is unreachable', () => {
+  installProperties({
+    ADMIN_API_TOKEN: 'admin-secret',
+    TELEGRAM_WEBHOOK_URL: 'https://telegram-gateway.example.workers.dev/',
+    GAS_GATEWAY_TOKEN: 'gateway-secret'
+  });
+  global.UrlFetchApp = {
+    fetch() { throw new Error('network unreachable'); }
+  };
   global.TelegramRuntime = { loadCatalog: () => [{ productId: 'p1', name: 'Trà đá', price: 5000, isAvailable: true }] };
 
   const response = AdminApi.doAdminPostWithoutMetrics({
@@ -177,6 +222,22 @@ test('get_catalog reads from TelegramRuntime', () => {
 
   assert.deepEqual(readJsonResponse(response), {
     ok: true,
+    source: 'catalog_json_fallback',
+    catalog: [{ productId: 'p1', name: 'Trà đá', price: 5000, isAvailable: true }]
+  });
+});
+
+test('get_catalog falls back to TelegramRuntime when gateway properties are not configured', () => {
+  installProperties({ ADMIN_API_TOKEN: 'admin-secret' });
+  global.TelegramRuntime = { loadCatalog: () => [{ productId: 'p1', name: 'Trà đá', price: 5000, isAvailable: true }] };
+
+  const response = AdminApi.doAdminPostWithoutMetrics({
+    parameter: { action: 'get_catalog', admin_token: 'admin-secret' }
+  });
+
+  assert.deepEqual(readJsonResponse(response), {
+    ok: true,
+    source: 'catalog_json_fallback',
     catalog: [{ productId: 'p1', name: 'Trà đá', price: 5000, isAvailable: true }]
   });
 });

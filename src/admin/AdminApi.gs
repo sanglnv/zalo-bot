@@ -91,8 +91,46 @@ function adminConfirmPayment(orderId, confirmedBy) {
   return processOrderPayment(orderId, confirmedBy);
 }
 
+// Reads the live catalog from the Cloudflare Worker's D1 database
+// (zalo-clawbot-catalog) — the actual source of truth for the Telegram fast
+// path when FAST_PATH_ENABLED=true. Returns null on any failure so the
+// caller can fall back rather than surface an error for what is meant to be
+// a convenience read. Reuses the same gateway URL/token as
+// FastPathPaymentClient.gs (TELEGRAM_WEBHOOK_URL + GAS_GATEWAY_TOKEN) — no
+// new secret to provision.
+function adminFetchLiveCatalogFromGateway() {
+  var properties = PropertiesService.getScriptProperties();
+  var gatewayUrl = properties.getProperty('TELEGRAM_WEBHOOK_URL');
+  var gatewayToken = properties.getProperty('GAS_GATEWAY_TOKEN');
+  if (!gatewayUrl || !gatewayToken) return null;
+  var response;
+  try {
+    response = UrlFetchApp.fetch(gatewayUrl.replace(/\/$/, '') + '/internal/catalog', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-GAS-Gateway-Token': gatewayToken },
+      payload: '{}',
+      muteHttpExceptions: true
+    });
+  } catch (error) {
+    return null;
+  }
+  if (response.getResponseCode() !== 200) return null;
+  var body;
+  try { body = JSON.parse(response.getContentText()); }
+  catch (error) { return null; }
+  if (!body || body.ok !== true || !Array.isArray(body.catalog)) return null;
+  return body.catalog;
+}
+
 function adminGetCatalog() {
-  return { ok: true, catalog: TelegramRuntime.loadCatalog() };
+  var liveCatalog = adminFetchLiveCatalogFromGateway();
+  if (liveCatalog) return { ok: true, source: 'd1_fast_path', catalog: liveCatalog };
+  // Fallback only: CATALOG_JSON is a transitional Script Property that can
+  // drift from the live D1 catalog used by the Telegram fast path (see
+  // docs/telegram-fast-path-phase3.md) — used only if the gateway is
+  // unreachable (e.g. fast path disabled, Worker down).
+  return { ok: true, source: 'catalog_json_fallback', catalog: TelegramRuntime.loadCatalog() };
 }
 
 function adminDispatchAction(action, params) {
@@ -141,6 +179,7 @@ if (typeof module !== 'undefined' && module.exports) {
     validAdminToken: validAdminToken,
     adminRequestParams: adminRequestParams,
     adminDispatchAction: adminDispatchAction,
-    adminOrderSummary: adminOrderSummary
+    adminOrderSummary: adminOrderSummary,
+    adminFetchLiveCatalogFromGateway: adminFetchLiveCatalogFromGateway
   };
 }

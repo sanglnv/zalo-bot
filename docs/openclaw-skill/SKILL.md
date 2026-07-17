@@ -66,9 +66,19 @@ Nếu `reason: "already_resolved"`, đơn đã được xử lý từ trước (
 curl -sS -X POST "$ZALO_CLAWBOT_WEB_APP_URL?platform=admin&admin_token=$ZALO_CLAWBOT_ADMIN_TOKEN&action=get_catalog"
 ```
 
-Trả về `{ ok: true, catalog: [{ productId, name, price, isAvailable, ... }] }`.
-Đây là dữ liệu đọc từ Script Property `CATALOG_JSON` — sửa catalog vẫn phải làm
-trong Apps Script, skill này chỉ đọc để trả lời câu hỏi của chủ shop.
+Trả về `{ ok: true, source, catalog: [{ productId, name, price, isAvailable, categoryName, remainingQuantity, ... }] }`.
+
+`source` cho biết dữ liệu lấy từ đâu:
+- `"d1_fast_path"` (bình thường) — đọc trực tiếp từ D1 (`zalo-clawbot-catalog`)
+  qua Cloudflare Worker, đúng bằng những gì khách Telegram thấy ngay lúc này,
+  gồm cả món đang tạm hết hàng (`isAvailable: false`).
+- `"catalog_json_fallback"` — Worker không phản hồi được (hiếm khi xảy ra), dữ
+  liệu lấy từ Script Property `CATALOG_JSON` (bản dự phòng, có thể cũ hơn thực
+  tế). Nếu gặp giá trị này, nói rõ với chủ shop là dữ liệu có thể không mới
+  nhất thay vì trả lời như bình thường.
+
+Sửa catalog (giá, món mới, bật/tắt còn hàng) vẫn phải làm trực tiếp trong D1
+hoặc qua lệnh admin Telegram `/kho` hiện có — skill này chỉ đọc, không sửa.
 
 ## Không có trong skill này
 

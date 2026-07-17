@@ -785,3 +785,72 @@ describe("DLQ monitoring", () => {
     }));
   });
 });
+
+describe("Admin catalog read endpoint (used by AdminApi.gs's get_catalog)", () => {
+  async function seedCatalog() {
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS categories (category_id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL, active INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS products (product_id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL, is_available INTEGER NOT NULL, sort_order INTEGER NOT NULL, updated_at TEXT NOT NULL, category_id TEXT NOT NULL DEFAULT 'CAT_OTHER', category_name TEXT NOT NULL DEFAULT 'Khác')"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS daily_inventory (product_id TEXT NOT NULL, business_date TEXT NOT NULL, initial_quantity INTEGER NOT NULL CHECK(initial_quantity >= 0), remaining_quantity INTEGER NOT NULL CHECK(remaining_quantity >= 0), active INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, PRIMARY KEY(product_id, business_date))"
+    );
+    await workerEnv.CATALOG_DB.exec("DELETE FROM daily_inventory");
+    await workerEnv.CATALOG_DB.exec("DELETE FROM products");
+    await workerEnv.CATALOG_DB.exec("DELETE FROM categories");
+    await workerEnv.CATALOG_DB.prepare(
+      `INSERT INTO categories(category_id, name, sort_order, active, updated_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind("CAT_CAFE", "Cà phê", 1, 1, new Date().toISOString()).run();
+    await workerEnv.CATALOG_DB.prepare(
+      `INSERT INTO products(
+         product_id, name, price, is_available, sort_order, updated_at, category_id, category_name
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind("p1", "Cà phê đen", 35000, 1, 0, new Date().toISOString(), "CAT_CAFE", "Cà phê").run();
+    // Unavailable product — admin reads must still see it (unlike the
+    // customer-facing fast path catalog, which filters is_available = 1).
+    await workerEnv.CATALOG_DB.prepare(
+      `INSERT INTO products(
+         product_id, name, price, is_available, sort_order, updated_at, category_id, category_name
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind("p2", "Trà đào (hết hàng)", 40000, 0, 1, new Date().toISOString(), "CAT_CAFE", "Cà phê").run();
+  }
+
+  it("rejects requests without the correct gateway token", async () => {
+    await seedCatalog();
+    const { environment } = fixture();
+    const response = await worker.fetch(
+      new Request("https://gateway.example/internal/catalog", {
+        method: "POST",
+        headers: { "X-GAS-Gateway-Token": "wrong-secret" },
+      }),
+      environment,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ ok: false, error: "unauthorized" });
+  });
+
+  it("returns every product from D1, including unavailable ones, for a valid gateway token", async () => {
+    await seedCatalog();
+    const { environment } = fixture();
+    const response = await worker.fetch(
+      new Request("https://gateway.example/internal/catalog", {
+        method: "POST",
+        headers: { "X-GAS-Gateway-Token": "gas-secret" },
+      }),
+      environment,
+      createExecutionContext(),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { ok: boolean; source: string; catalog: unknown[] };
+    expect(body.ok).toBe(true);
+    expect(body.source).toBe("d1");
+    expect(body.catalog).toEqual([
+      expect.objectContaining({ productId: "p1", name: "Cà phê đen", price: 35000, isAvailable: true }),
+      expect.objectContaining({ productId: "p2", name: "Trà đào (hết hàng)", price: 40000, isAvailable: false }),
+    ]);
+  });
+});
