@@ -227,6 +227,9 @@ describe("Telegram Durable Object fast path", () => {
 
     const updates = [
       { update_id: 70010, message: { chat: { id: 7001 }, text: "catalog" } },
+      { update_id: 700101, message: { chat: { id: 7001 }, text: "Pilot Customer" } },
+      { update_id: 700102, message: { chat: { id: 7001 }, text: "bỏ qua" } },
+      { update_id: 700103, message: { chat: { id: 7001 }, text: "catalog" } },
       {
         update_id: 70011,
         callback_query: {
@@ -288,16 +291,16 @@ describe("Telegram Durable Object fast path", () => {
     const operations = durableMessages.filter(
       (message) => (message as { kind?: string }).kind === "operations_order"
     );
-    expect(snapshots).toHaveLength(7);
+    expect(snapshots).toHaveLength(10);
     expect(snapshots.map((message) => (message as { schemaVersion: number }).schemaVersion))
-      .toEqual([2, 2, 2, 2, 2, 2, 2]);
+      .toEqual([2, 2, 2, 2, 2, 2, 2, 2, 2, 2]);
     expect(snapshots.map(
       (message) => (message as { revision: number }).revision
     ).sort((left, right) => left - right))
-      .toEqual([1, 2, 3, 4, 5, 6, 7]);
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(new Set(snapshots.map(
       (message) => (message as { snapshotId: string }).snapshotId
-    )).size).toBe(7);
+    )).size).toBe(10);
     expect(operations).toEqual([expect.objectContaining({
       kind: "operations_order",
       chatId: "7001",
@@ -347,6 +350,22 @@ describe("Telegram Durable Object fast path", () => {
       chat_id: "7001",
       caption: expect.stringContaining(orderId),
     }));
+    const customerQrRetry = await worker.fetch(
+      webhookRequest({
+        update_id: 700152,
+        message: {
+          from: { id: 7001 },
+          chat: { id: 7001, type: "private" },
+          text: "/thanhtoan",
+        },
+      }),
+      fastPathEnvironment,
+      createExecutionContext(),
+    );
+    expect(customerQrRetry.status).toBe(200);
+    expect(telegramFetch.mock.calls.filter(([input]) =>
+      String(input).includes("/sendPhoto")
+    )).toHaveLength(1);
 
     telegramFetch.mockClear();
     const qrRequestResponse = await worker.fetch(
@@ -888,6 +907,43 @@ describe("POS catalog sync (keeps Fast Path D1 in sync with BotOrderWebhookClien
       "SELECT * FROM categories WHERE category_id = ?"
     ).bind("CAT_CAFE").first();
     expect(category).toEqual(expect.objectContaining({ name: "New Name", sort_order: 99, active: 0 }));
+  });
+
+  it("deactivates products missing from the latest POS snapshot", async () => {
+    await seedSchema();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await workerEnv.CATALOG_DB.prepare(
+      "INSERT INTO categories(category_id, name, sort_order, active, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind("CAT_CAFE", "Cà phê", 0, 1, "2020-01-01T00:00:00.000Z").run();
+    await workerEnv.CATALOG_DB.prepare(
+      `INSERT INTO products(
+         product_id, name, price, is_available, sort_order, updated_at, category_id, category_name
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      "removed-product", "Món đã gỡ", 25000, 1, 0,
+      "2020-01-01T00:00:00.000Z", "CAT_CAFE", "Cà phê"
+    ).run();
+    vi.stubGlobal("fetch", catalogFetchMock({
+      ok: true,
+      catalog: [
+        { productId: "p1", name: "Cà phê", price: 35000, isAvailable: true, categoryId: "CAT_CAFE", categoryName: "Cà phê" },
+      ],
+    }));
+    const { environment } = fixture();
+
+    await worker.scheduled(
+      { cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry: vi.fn() },
+      environment,
+    );
+
+    const removed = await workerEnv.CATALOG_DB.prepare(
+      "SELECT is_available AS isAvailable FROM products WHERE product_id = ?"
+    ).bind("removed-product").first<{ isAvailable: number }>();
+    expect(removed?.isAvailable).toBe(0);
+    const current = await workerEnv.CATALOG_DB.prepare(
+      "SELECT is_available AS isAvailable FROM products WHERE product_id = ?"
+    ).bind("p1").first<{ isAvailable: number }>();
+    expect(current?.isAvailable).toBe(1);
   });
 
   it("logs catalog_sync_failed without throwing when the POS admin endpoint errors", async () => {

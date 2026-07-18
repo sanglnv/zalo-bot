@@ -516,6 +516,27 @@ export class TelegramSession extends DurableObject<Env> {
     };
   }
 
+  async claimPaymentQrUpdate(updateId: number): Promise<boolean> {
+    return this.ctx.storage.transactionSync(() => {
+      const normalizedUpdateId = String(updateId);
+      const existing = this.ctx.storage.sql.exec<{ update_id: string }>(
+        "SELECT update_id FROM processed_updates WHERE update_id = ?",
+        normalizedUpdateId
+      ).toArray()[0];
+      if (existing) return false;
+      this.storeProcessed(normalizedUpdateId, [], true);
+      return true;
+    });
+  }
+
+  async releasePaymentQrUpdate(updateId: number): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM processed_updates
+       WHERE update_id = ? AND ignored = 1 AND commands_json = '[]'`,
+      String(updateId)
+    );
+  }
+
   async expirePayment(orderId: string): Promise<PaymentResolution> {
     return this.resolvePayment(orderId, "expire", "system:durable-object-alarm");
   }

@@ -18,6 +18,7 @@ const validProperties = {
   TELEGRAM_WEBHOOK_URL: 'https://telegram-gateway.example.workers.dev',
   TELEGRAM_WEBHOOK_SECRET: 'telegram-webhook-secret',
   GAS_GATEWAY_TOKEN: 'gas-gateway-token',
+  TELEGRAM_ADMIN_USER_IDS: '111,222',
   TELEGRAM_OPERATIONS_CHAT_ID: '-100200300'
 };
 

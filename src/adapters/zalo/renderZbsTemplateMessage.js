@@ -6,10 +6,10 @@ function renderZbsTemplateMessage(message, userId, templateIds) {
     throw new TypeError('ZBS notification must be a normalized text message');
   }
   templateIds = templateIds || {};
-  var expired = message.content.text.indexOf('đã hết hạn') >= 0;
-  var paid = message.content.text.indexOf('Đã xác nhận thanh toán') === 0 ||
-    message.content.text.indexOf('Payment confirmed') === 0;
-  if (!expired && !paid) throw new Error('No ZBS template mapping for notification');
+  var kind = message.content.kind;
+  var expired = kind === 'payment_expired';
+  var paid = kind === 'payment_confirmed';
+  if (!expired && !paid) throw new Error('No ZBS template mapping for kind: ' + kind);
   var templateId = expired ? templateIds.expired : templateIds.paymentConfirmed;
   if (!templateId) throw new Error('Missing ZBS template id for ' + (expired ? 'expiry' : 'payment confirmation'));
   return {

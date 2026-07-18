@@ -1,37 +1,15 @@
 'use strict';
 
 var ZaloRuntime = (function () {
-  function properties() { return PropertiesService.getScriptProperties(); }
-  function requiredProperty(name) {
-    var value = properties().getProperty(name);
-    if (!value) throw new Error('Missing required script property: ' + name);
-    return value;
-  }
-  function loadCatalog() {
-    return BotOrderWebhookClient.fetchMenuCatalog();
-  }
-  function createPaymentQrUrl(order) {
-    var template = properties().getProperty('VIETQR_TEMPLATE') || 'compact2';
-    var prefix = properties().getProperty('VIETQR_TRANSFER_PREFIX') || 'DH';
-    return 'https://img.vietqr.io/image/' +
-      encodeURIComponent(requiredProperty('VIETQR_BANK_ID')) + '-' +
-      encodeURIComponent(requiredProperty('VIETQR_ACCOUNT_NO')) + '-' +
-      encodeURIComponent(template) + '.png?amount=' + encodeURIComponent(String(order.totalAmount)) +
-      '&addInfo=' + encodeURIComponent(prefix + order.orderId) +
-      '&accountName=' + encodeURIComponent(requiredProperty('VIETQR_ACCOUNT_NAME'));
-  }
-  function createId() { return Utilities.getUuid().replace(/-/g, '').slice(0, 20); }
-  function fallbackMessage() {
-    var contact = properties().getProperty('SUPPORT_CONTACT');
-    return 'Đã có lỗi khi xử lý yêu cầu. Vui lòng thử lại' +
-      (contact ? ' hoặc liên hệ ' + contact : ' hoặc liên hệ nhân viên hỗ trợ') + '.';
+  function shared() {
+    return typeof BotRuntime !== 'undefined' ? BotRuntime : require('../BotRuntime.gs');
   }
   return Object.freeze({
-    loadCatalog: loadCatalog,
-    createPaymentQrUrl: createPaymentQrUrl,
-    createId: createId,
-    fallbackMessage: fallbackMessage,
-    requiredProperty: requiredProperty
+    loadCatalog: function () { return shared().loadCatalog(); },
+    createPaymentQrUrl: function (order) { return shared().createPaymentQrUrl(order); },
+    createId: function () { return shared().createId(); },
+    fallbackMessage: function () { return shared().fallbackMessage(); },
+    requiredProperty: function (name) { return shared().requiredProperty(name); }
   });
 })();
 

@@ -749,6 +749,7 @@ function createOrderService(dependencies) {
       return {
         customer: customer,
         outboundMessages: [outbound('text', {
+          kind: 'payment_confirmed',
           text: 'Đã xác nhận thanh toán cho đơn #' + orderId + '. Cảm ơn bạn!',
           orderId: orderId
         })]
@@ -786,6 +787,7 @@ function createOrderService(dependencies) {
       return {
         customer: customer,
         outboundMessages: [outbound('text', {
+          kind: 'payment_expired',
           text: 'Đơn hàng #' + orderId +
             ' đã hết hạn do quá thời gian chờ thanh toán. Vui lòng đặt lại nếu quý khách vẫn muốn mua.',
           orderId: orderId

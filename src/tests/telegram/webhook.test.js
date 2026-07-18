@@ -363,6 +363,7 @@ test('/thanhtoan in the ops chat dispatches the QR and never reaches OrderServic
   let dispatched = null;
   const f = setup({
     opsChatId: 'ops-1',
+    adminUserIds: '999',
     dispatchPaymentQr: (orderId) => {
       dispatched = orderId;
       return { ok: true, dispatchResults: [{ platform: 'telegram', skipped: false }] };
@@ -378,7 +379,7 @@ test('/thanhtoan in the ops chat dispatches the QR and never reaches OrderServic
 });
 
 test('/thanhtoan without an orderId replies with usage instead of silently failing', () => {
-  const f = setup({ opsChatId: 'ops-1' });
+  const f = setup({ opsChatId: 'ops-1', adminUserIds: '999' });
   f.post(opsMessage(601, '/thanhtoan', 'ops-1'));
   const reply = f.fetchCalls.find((call) => call.params.chat_id === 'ops-1');
   assert.match(reply.params.text, /Cú pháp: \/thanhtoan/);
@@ -388,6 +389,7 @@ test('/thanhtoan without an orderId replies with usage instead of silently faili
 test('/thanhtoan reports not_found and already_resolved distinctly', () => {
   const notFound = setup({
     opsChatId: 'ops-1',
+    adminUserIds: '999',
     dispatchPaymentQr: () => ({ ok: false, reason: 'not_found' })
   });
   notFound.post(opsMessage(602, '/thanhtoan HD-missing', 'ops-1'));
@@ -398,6 +400,7 @@ test('/thanhtoan reports not_found and already_resolved distinctly', () => {
 
   const resolved = setup({
     opsChatId: 'ops-1',
+    adminUserIds: '999',
     dispatchPaymentQr: () => ({ ok: false, reason: 'already_resolved', status: 'PAID' })
   });
   resolved.post(opsMessage(603, '/thanhtoan HD-paid', 'ops-1'));
@@ -430,6 +433,20 @@ test('/thanhtoan is rejected for a sender outside TELEGRAM_ADMIN_USER_IDS when i
   assert.equal(dispatched, true);
 });
 
+test('/thanhtoan is rejected when TELEGRAM_ADMIN_USER_IDS is not configured', () => {
+  let dispatched = false;
+  const f = setup({
+    opsChatId: 'ops-1',
+    dispatchPaymentQr: () => { dispatched = true; return { ok: true, dispatchResults: [] }; }
+  });
+  f.post(opsMessage(6051, '/thanhtoan HD1', 'ops-1', 111));
+  assert.equal(dispatched, false);
+  assert.match(
+    f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /Bạn không có quyền/
+  );
+});
+
 test('/thanhtoan sent outside the configured ops chat falls through to the normal customer pipeline', () => {
   const f = setup({ opsChatId: 'ops-1' });
   const response = f.post(opsMessage(606, '/thanhtoan HD1', 777));
@@ -441,6 +458,7 @@ test('duplicate /thanhtoan updates only dispatch once', () => {
   let dispatchCount = 0;
   const f = setup({
     opsChatId: 'ops-1',
+    adminUserIds: '999',
     dispatchPaymentQr: () => { dispatchCount += 1; return { ok: true, dispatchResults: [] }; }
   });
   const update = opsMessage(607, '/thanhtoan HD1', 'ops-1');

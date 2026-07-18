@@ -24,6 +24,16 @@ test('applies fixed and percentage discounts', () => {
   });
 });
 
+test('rounds percentage-discount totals to an integer currency amount', () => {
+  const bill = calculateBill(
+    [{ productId: 'odd', unitPrice: 33_333, quantity: 1 }],
+    { type: 'percentage', value: 10 }
+  );
+  assert.equal(bill.discountAmount, 3333.3);
+  assert.equal(bill.totalAmount, 30_000);
+  assert.equal(Number.isInteger(bill.totalAmount), true);
+});
+
 test('caps a fixed discount at the subtotal and handles an empty bill', () => {
   assert.equal(calculateBill(items, { type: 'fixed', value: 999_999 }).totalAmount, 0);
   assert.deepEqual(calculateBill([]), { subtotal: 0, discountAmount: 0, totalAmount: 0 });

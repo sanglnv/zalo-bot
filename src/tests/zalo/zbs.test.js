@@ -8,16 +8,16 @@ const { dispatchNotifications } = require('../../adapters/notificationDispatcher
 test('payment confirmation and expiry select separate approved ZBS templates', () => {
   const ids = { paymentConfirmed: 'paid-template', expired: 'expired-template' };
   const paid = renderZbsTemplateMessage({
-    type: 'text', content: { text: 'Đã xác nhận thanh toán cho đơn #o1. Cảm ơn bạn!', orderId: 'o1' }
+    type: 'text', content: { kind: 'payment_confirmed', text: 'Nội dung có thể thay đổi hoàn toàn.', orderId: 'o1' }
   }, 'u1', ids);
   const expired = renderZbsTemplateMessage({
-    type: 'text', content: { text: 'Đơn hàng #o2 đã hết hạn do quá thời gian chờ thanh toán.', orderId: 'o2' }
+    type: 'text', content: { kind: 'payment_expired', text: 'Một câu thông báo hết hạn mới.', orderId: 'o2' }
   }, 'u1', ids);
   assert.equal(paid.method, 'sendZbsTemplate');
   assert.equal(paid.params.template_id, 'paid-template');
   assert.equal(expired.params.template_id, 'expired-template');
   assert.deepEqual(expired.params.template_data, {
-    order_id: 'o2', message: 'Đơn hàng #o2 đã hết hạn do quá thời gian chờ thanh toán.'
+    order_id: 'o2', message: 'Một câu thông báo hết hạn mới.'
   });
 });
 
@@ -47,7 +47,9 @@ test('notification registry dispatches Zalo links through ZBS, not the normal Se
 
   dispatchNotifications(
     { platformLinks: [{ platform: 'zalo', platformUserId: 'u1' }] },
-    [{ type: 'text', content: { text: 'Đã xác nhận thanh toán cho đơn #o1. Cảm ơn bạn!', orderId: 'o1' } }],
+    [{ type: 'text', content: {
+      kind: 'payment_confirmed', text: 'Bất kỳ câu chữ nào.', orderId: 'o1'
+    } }],
     registry
   );
   assert.equal(calls.length, 1);

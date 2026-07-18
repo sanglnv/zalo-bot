@@ -4,6 +4,13 @@ function SheetProcessedUpdateRepository() {
   var SHEET = 'ProcessedUpdates';
   var HEADERS = ['updateId', 'processedAt', 'deliveryStatus'];
   var STATUSES = Object.freeze({ pending: true, delivered: true, failed: true });
+  var CACHE_TTL_SECONDS = 300;
+
+  function cache() {
+    return typeof CacheService === 'undefined' ? null : CacheService.getScriptCache();
+  }
+
+  function cacheKey(updateId) { return 'processed:telegram:' + String(updateId); }
 
   function writableSheet() {
     var sheet = SheetRepositorySupport.writableSheet(SHEET, HEADERS);
@@ -14,8 +21,12 @@ function SheetProcessedUpdateRepository() {
 
   function has(updateId) {
     var normalized = String(updateId);
-    return SheetRepositorySupport.rows(SheetRepositorySupport.readSheet(SHEET))
+    var scriptCache = cache();
+    if (scriptCache && scriptCache.get(cacheKey(normalized))) return true;
+    var exists = SheetRepositorySupport.rows(SheetRepositorySupport.readSheet(SHEET))
       .some(function (row) { return String(row[0]) === normalized; });
+    if (exists && scriptCache) scriptCache.put(cacheKey(normalized), '1', CACHE_TTL_SECONDS);
+    return exists;
   }
 
   function getDeliveryStatus(updateId) {
@@ -34,6 +45,8 @@ function SheetProcessedUpdateRepository() {
       var exists = SheetRepositorySupport.rows(sheet)
         .some(function (row) { return String(row[0]) === normalized; });
       if (!exists) sheet.appendRow([normalized, processedAt, 'pending']);
+      var scriptCache = cache();
+      if (scriptCache) scriptCache.put(cacheKey(normalized), '1', CACHE_TTL_SECONDS);
       return !exists;
     });
   }

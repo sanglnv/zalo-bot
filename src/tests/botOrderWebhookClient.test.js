@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 require.extensions['.gs'] = require.extensions['.js'];
 
@@ -39,6 +41,27 @@ function loadClient(options = {}) {
   delete require.cache[require.resolve('../adapters/menu/BotOrderWebhookClient.gs')];
   return require('../adapters/menu/BotOrderWebhookClient.gs');
 }
+
+const capturedFixture = JSON.parse(fs.readFileSync(
+  path.join(__dirname, 'fixtures', 'bot-order-webhook-live-response.json'),
+  'utf8'
+));
+
+test('captured POS response fixture preserves product and order normalization contracts', () => {
+  const product = loadClient({ body: capturedFixture.menu }).fetchMenuCatalog()[0];
+  assert.deepEqual(product, {
+    productId: 'M627869', name: 'ESPRESSO', price: 20000, isAvailable: true,
+    categoryId: 'CAT_CAFE', categoryName: 'CAFE'
+  });
+
+  const order = loadClient({ body: capturedFixture.order }).getOrder('HD-LIVE-1');
+  assert.deepEqual(order, {
+    orderId: 'HD-LIVE-1', customerId: 'customer-1', status: 'AWAITING_PAYMENT',
+    totalAmount: 40000, createdAt: '2026-07-18T01:00:00.000Z',
+    updatedAt: '2026-07-18T01:05:00.000Z', confirmedAt: null, confirmedBy: null,
+    items: [{ productId: 'M627869', name: 'ESPRESSO', unitPrice: 20000, quantity: 2 }]
+  });
+});
 
 test('call() sends secret + requestId + action in the POST body, not headers or query params', () => {
   const options = {

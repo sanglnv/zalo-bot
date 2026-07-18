@@ -1,0 +1,48 @@
+{
+  "menu": {
+    "ok": true,
+    "action": "getMenuCatalog",
+    "requestId": "captured-menu-2026-07-18",
+    "status": "completed",
+    "patch": {
+      "categories": [
+        { "id": "CAT_CAFE", "name": "CAFE", "sortOrder": 1, "active": true }
+      ],
+      "products": [
+        {
+          "id": "M627869",
+          "categoryId": "CAT_CAFE",
+          "sku": "M627869",
+          "name": "ESPRESSO",
+          "basePrice": 20000,
+          "sizeOptionsJson": "[{\"name\":\"M\",\"price\":20000}]",
+          "active": true,
+          "soldOut": false,
+          "sortOrder": 0
+        }
+      ]
+    }
+  },
+  "order": {
+    "ok": true,
+    "action": "getOrder",
+    "requestId": "captured-order-2026-07-18",
+    "status": "completed",
+    "patch": {
+      "orders": [
+        {
+          "id": "HD-LIVE-1",
+          "status": "open",
+          "customerId": "customer-1",
+          "total": 40000,
+          "createdAt": "2026-07-18T01:00:00.000Z",
+          "updatedAt": "2026-07-18T01:05:00.000Z",
+          "completedAt": ""
+        }
+      ],
+      "orderItems": [
+        { "productId": "M627869", "productName": "ESPRESSO", "unitPrice": 20000, "quantity": 2 }
+      ]
+    }
+  }
+}

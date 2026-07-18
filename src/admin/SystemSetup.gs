@@ -13,6 +13,7 @@ var SystemSetup = (function () {
     'TELEGRAM_WEBHOOK_URL',
     'TELEGRAM_WEBHOOK_SECRET',
     'GAS_GATEWAY_TOKEN',
+    'TELEGRAM_ADMIN_USER_IDS',
     // QR is no longer sent to the customer at confirm_order time -- staff
     // sends it manually via "/thanhtoan <orderId>" in this chat (see
     // OperationsNotifier.gs/PaymentQrDispatch.gs). Without this, confirmed
@@ -22,10 +23,9 @@ var SystemSetup = (function () {
     // optional, unlike before.
     'TELEGRAM_OPERATIONS_CHAT_ID'
   ];
-  // 'Orders' is intentionally not managed here anymore: orders are created,
-  // read, completed, and cancelled through the POS Bot Order Webhook
-  // (BotOrderRepository), not Sheets. SheetOrderRepository.gs still exists
-  // and is still tested, but nothing wires it into the live app.
+  // 'Orders' is intentionally not managed here anymore for the normal path:
+  // BotOrderRepository uses the POS webhook. SheetOrderRepository remains a
+  // live compatibility mirror for FastPathSync and FastPathPaymentClient.
   var SHEETS = [
     ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson', 'memberId']],
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],

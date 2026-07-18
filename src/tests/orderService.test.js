@@ -450,6 +450,7 @@ test('confirmPayment marks order paid, advances state, and returns a notificatio
   assert.deepEqual(result.outboundMessages, [{
     type: 'text',
     content: {
+      kind: 'payment_confirmed',
       text: `Đã xác nhận thanh toán cho đơn #${orderId}. Cảm ơn bạn!`,
       orderId
     }
@@ -520,6 +521,7 @@ test('expireOrder marks an awaiting order expired and returns a notification', (
   assert.equal([...f.states.values()][0].currentState, 'EXPIRED');
   assert.equal(result.customer.customerId, f.orders[0].customerId);
   assert.equal(result.outboundMessages[0].type, 'text');
+  assert.equal(result.outboundMessages[0].content.kind, 'payment_expired');
   assert.match(result.outboundMessages[0].content.text, new RegExp(orderId));
 });
 

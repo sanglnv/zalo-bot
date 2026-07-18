@@ -73,9 +73,12 @@ function notifyStaffOfNewOrder(order, sourcePlatform, errorLogRepository) {
 
 function isAuthorizedOpsAdmin(userId) {
   var raw = PropertiesService.getScriptProperties().getProperty('TELEGRAM_ADMIN_USER_IDS');
-  // Unconfigured means "anyone who can post in the ops chat is trusted" --
-  // the ops chat itself is the access boundary in that case.
-  if (!raw) return true;
+  if (!raw) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(JSON.stringify({ event: 'ops_admin_allowlist_not_configured' }));
+    }
+    return false;
+  }
   return raw.split(',').map(function (id) { return id.trim(); }).filter(Boolean)
     .indexOf(String(userId)) !== -1;
 }

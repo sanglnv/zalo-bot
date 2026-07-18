@@ -336,8 +336,17 @@ async function syncCatalogFromPos(env: Env): Promise<void> {
     ).bind(categoryId, categoryNames.get(categoryId), index, now)
   );
 
-  if (categoryStatements.length > 0) await env.CATALOG_DB.batch(categoryStatements);
-  if (productStatements.length > 0) await env.CATALOG_DB.batch(productStatements);
+  // Treat the POS response as a complete snapshot. Deactivate the previous
+  // snapshot first so a product removed from the POS cannot remain sellable
+  // forever in D1. D1 batch executes these statements as one transaction, so
+  // a failed upsert also rolls the deactivation back.
+  await env.CATALOG_DB.batch([
+    env.CATALOG_DB.prepare(
+      "UPDATE products SET is_available = 0, updated_at = ? WHERE is_available != 0"
+    ).bind(now),
+    ...categoryStatements,
+    ...productStatements
+  ]);
 
   log("log", "catalog_sync_completed", {
     productCount: products.length,
@@ -814,46 +823,59 @@ export default {
         paymentRequest.customerChatId,
         { locationHint: "apac-se" }
       );
-      const resolution = await session.requestPaymentQr(paymentRequest.orderId, {
-        bankId: fastEnv.VIETQR_BANK_ID ?? "",
-        accountNo: fastEnv.VIETQR_ACCOUNT_NO ?? "",
-        accountName: fastEnv.VIETQR_ACCOUNT_NAME ?? "",
-        template: fastEnv.VIETQR_TEMPLATE || "compact2",
-        transferPrefix: fastEnv.VIETQR_TRANSFER_PREFIX || "DH"
-      });
-      const resolvedOrderId = resolution.orderId || paymentRequest.orderId || "không xác định";
-      const acknowledgement = resolution.outcome === "ready"
-        ? `Đã gửi QR cho khách ${paymentRequest.customerChatId} · đơn ${resolvedOrderId}.`
-        : resolution.outcome === "already_resolved"
-          ? resolution.status === "EXPIRED"
-            ? `Đơn ${resolvedOrderId} đã hết hạn. Vui lòng đặt lại đơn mới để thanh toán.`
-            : `Không gửi QR: đơn ${resolvedOrderId} đang ở trạng thái ${resolution.status}.`
-          : "Không tìm thấy đơn nào có thể thanh toán. Vui lòng đặt món và xác nhận đơn trước.";
-      const customerCommands = resolution.outcome === "ready" && resolution.qrUrl
-        ? [{
-            method: "sendPhoto",
-            params: {
-              chat_id: paymentRequest.customerChatId,
-              photo: resolution.qrUrl,
-              caption: `Đơn ${resolvedOrderId}. Vui lòng quét QR để thanh toán.`
-            }
+      if (!(await session.claimPaymentQrUpdate(update.update_id))) {
+        log("log", "telegram_payment_qr_duplicate", {
+          updateId: update.update_id,
+          customerChatId: paymentRequest.customerChatId
+        });
+        return new Response("OK", { status: 200 });
+      }
+      try {
+        const resolution = await session.requestPaymentQr(paymentRequest.orderId, {
+          bankId: fastEnv.VIETQR_BANK_ID ?? "",
+          accountNo: fastEnv.VIETQR_ACCOUNT_NO ?? "",
+          accountName: fastEnv.VIETQR_ACCOUNT_NAME ?? "",
+          template: fastEnv.VIETQR_TEMPLATE || "compact2",
+          transferPrefix: fastEnv.VIETQR_TRANSFER_PREFIX || "DH"
+        });
+        const resolvedOrderId = resolution.orderId || paymentRequest.orderId || "không xác định";
+        const acknowledgement = resolution.outcome === "ready"
+          ? `Đã gửi QR cho khách ${paymentRequest.customerChatId} · đơn ${resolvedOrderId}.`
+          : resolution.outcome === "already_resolved"
+            ? resolution.status === "EXPIRED"
+              ? `Đơn ${resolvedOrderId} đã hết hạn. Vui lòng đặt lại đơn mới để thanh toán.`
+              : `Không gửi QR: đơn ${resolvedOrderId} đang ở trạng thái ${resolution.status}.`
+            : "Không tìm thấy đơn nào có thể thanh toán. Vui lòng đặt món và xác nhận đơn trước.";
+        const customerCommands = resolution.outcome === "ready" && resolution.qrUrl
+          ? [{
+              method: "sendPhoto",
+              params: {
+                chat_id: paymentRequest.customerChatId,
+                photo: resolution.qrUrl,
+                caption: `Đơn ${resolvedOrderId}. Vui lòng quét QR để thanh toán.`
+              }
+            }]
+          : [];
+        const responseCommands = paymentRequest.requestedBy === "admin" || resolution.outcome !== "ready"
+          ? [{
+            method: "sendMessage",
+            params: { chat_id: paymentRequest.responseChatId, text: acknowledgement }
           }]
-        : [];
-      const responseCommands = paymentRequest.requestedBy === "admin" || resolution.outcome !== "ready"
-        ? [{
-          method: "sendMessage",
-          params: { chat_id: paymentRequest.responseChatId, text: acknowledgement }
-        }]
-        : [];
-      await sendTelegramCommands([...customerCommands, ...responseCommands], fastEnv);
-      log("log", "telegram_payment_qr_requested", {
-        updateId: update.update_id,
-        orderId: resolvedOrderId,
-        customerChatId: paymentRequest.customerChatId,
-        requestedBy: paymentRequest.requestedBy,
-        outcome: resolution.outcome
-      });
-      return new Response("OK", { status: 200 });
+          : [];
+        await sendTelegramCommands([...customerCommands, ...responseCommands], fastEnv);
+        log("log", "telegram_payment_qr_requested", {
+          updateId: update.update_id,
+          orderId: resolvedOrderId,
+          customerChatId: paymentRequest.customerChatId,
+          requestedBy: paymentRequest.requestedBy,
+          outcome: resolution.outcome
+        });
+        return new Response("OK", { status: 200 });
+      } catch (error) {
+        // Let Telegram retry if delivery failed before the request completed.
+        await session.releasePaymentQrUpdate(update.update_id);
+        throw error;
+      }
     }
 
     if (isStartCommand(update)) {

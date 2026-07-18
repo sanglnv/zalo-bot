@@ -64,3 +64,92 @@ test('error-log repository appends structured failure details under a lock', () 
   ]);
   assert.equal(lockCalls, 1);
 });
+
+test('customer platform lookup uses cache without reading Sheets and populates on miss', () => {
+  const cacheValues = new Map();
+  global.CacheService = {
+    getScriptCache: () => ({
+      get: (key) => cacheValues.get(key) || null,
+      put: (key, value) => cacheValues.set(key, value),
+      remove: (key) => cacheValues.delete(key)
+    })
+  };
+  let sheetReads = 0;
+  const rows = [[
+    'customer-1', '', 'Sang',
+    JSON.stringify([{ platform: 'telegram', platformUserId: '7001' }]), ''
+  ]];
+  global.SheetRepositorySupport = {
+    readSheet: () => { sheetReads += 1; return {}; },
+    rows: () => rows,
+    withScriptLock: (operation) => operation()
+  };
+  delete require.cache[require.resolve('../../repositories/SheetCustomerRepository.gs')];
+  const repository = require('../../repositories/SheetCustomerRepository.gs')();
+
+  assert.equal(repository.findByPlatformUserId('telegram', '7001').customerId, 'customer-1');
+  assert.equal(sheetReads, 1, 'cache miss must scan the Sheet');
+  assert.equal(repository.findByPlatformUserId('telegram', '7001').customerId, 'customer-1');
+  assert.equal(sheetReads, 1, 'cache hit must not read the Sheet');
+});
+
+test('stale customer platform cache falls back to a Sheet scan without throwing', () => {
+  const cacheValues = new Map([['customer:telegram:7001', 'deleted-customer']]);
+  global.CacheService = {
+    getScriptCache: () => ({
+      get: (key) => cacheValues.get(key) || null,
+      put: (key, value) => cacheValues.set(key, value),
+      remove: (key) => cacheValues.delete(key)
+    })
+  };
+  let sheetReads = 0;
+  const rows = [[
+    'customer-2', '', 'Replacement',
+    JSON.stringify([{ platform: 'telegram', platformUserId: '7001' }]), ''
+  ]];
+  global.SheetRepositorySupport = {
+    readSheet: () => { sheetReads += 1; return {}; },
+    rows: () => rows,
+    withScriptLock: (operation) => operation()
+  };
+  delete require.cache[require.resolve('../../repositories/SheetCustomerRepository.gs')];
+  const repository = require('../../repositories/SheetCustomerRepository.gs')();
+
+  assert.equal(repository.findByPlatformUserId('telegram', '7001').customerId, 'customer-2');
+  assert.equal(sheetReads, 2, 'stale id lookup and fallback platform scan both consult Sheets');
+  assert.equal(cacheValues.get('customer:telegram:7001'), 'customer-2');
+});
+
+test('conversation state cache avoids repeated Sheet scans and set refreshes the cached value', () => {
+  const cacheValues = new Map();
+  global.CacheService = {
+    getScriptCache: () => ({
+      get: (key) => cacheValues.get(key) || null,
+      put: (key, value) => cacheValues.set(key, value),
+      remove: (key) => cacheValues.delete(key)
+    })
+  };
+  let sheetReads = 0;
+  const rows = [['customer-1', 'CART', '{"cart":[]}', '2026-07-18T00:00:00.000Z']];
+  const sheet = {
+    getRange() { return { setValues(values) { rows[0] = values[0]; } }; }
+  };
+  global.SheetRepositorySupport = {
+    readSheet: () => { sheetReads += 1; return sheet; },
+    writableSheet: () => sheet,
+    rows: () => rows,
+    withScriptLock: (operation) => operation()
+  };
+  delete require.cache[require.resolve('../../repositories/SheetConversationStateRepository.gs')];
+  const repository = require('../../repositories/SheetConversationStateRepository.gs')();
+
+  assert.equal(repository.get('customer-1').currentState, 'CART');
+  assert.equal(repository.get('customer-1').currentState, 'CART');
+  assert.equal(sheetReads, 1);
+  repository.set('customer-1', {
+    customerId: 'customer-1', currentState: 'CONFIRMING', contextData: { cart: [] },
+    updatedAt: '2026-07-18T00:01:00.000Z'
+  });
+  assert.equal(repository.get('customer-1').currentState, 'CONFIRMING');
+  assert.equal(sheetReads, 1);
+});

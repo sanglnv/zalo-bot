@@ -78,9 +78,9 @@ test('notifyStaffOfNewOrder logs and returns false instead of throwing when the 
   assert.match(logs[0].message, /Telegram API down/);
 });
 
-test('isAuthorizedOpsAdmin allows everyone when TELEGRAM_ADMIN_USER_IDS is unset, else checks the allowlist', () => {
-  const openModule = loadModule({}, () => ({ execute() {} }));
-  assert.equal(openModule.isAuthorizedOpsAdmin('12345'), true);
+test('isAuthorizedOpsAdmin fails closed when TELEGRAM_ADMIN_USER_IDS is unset, else checks the allowlist', () => {
+  const closedModule = loadModule({}, () => ({ execute() {} }));
+  assert.equal(closedModule.isAuthorizedOpsAdmin('12345'), false);
 
   const restricted = loadModule({ TELEGRAM_ADMIN_USER_IDS: '111, 222' }, () => ({ execute() {} }));
   assert.equal(restricted.isAuthorizedOpsAdmin('111'), true);

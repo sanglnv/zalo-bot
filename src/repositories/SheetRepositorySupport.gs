@@ -35,7 +35,34 @@ var SheetRepositorySupport = (function () {
     // Also support an outer runtime lock acquired outside this helper.
     if (typeof lock.hasLock === 'function' && lock.hasLock()) return operation();
     var waitStartedAt = Date.now();
-    if (!lock.tryLock(LOCK_TIMEOUT_MS)) throw new Error('Could not acquire script lock within 30 seconds');
+    if (!lock.tryLock(LOCK_TIMEOUT_MS)) {
+      var timeoutWaitMs = Math.max(0, Date.now() - waitStartedAt);
+      var timeoutError = new Error('Could not acquire script lock within 30 seconds');
+      // Do not use SheetErrorLogRepository here: it acquires this same lock and
+      // would recurse into another 30-second timeout. A direct append is the
+      // best-effort escape hatch reserved for lock-acquisition failures.
+      try {
+        writableSheet('ErrorLogs', ['timestamp', 'context', 'message', 'stack']).appendRow([
+          new Date().toISOString(),
+          JSON.stringify({
+            stage: 'script_lock_timeout',
+            waitMs: timeoutWaitMs,
+            timeoutMs: LOCK_TIMEOUT_MS
+          }),
+          timeoutError.message,
+          timeoutError.stack || ''
+        ]);
+      } catch (logError) {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error(JSON.stringify({
+            event: 'script_lock_timeout_log_failed',
+            waitMs: timeoutWaitMs,
+            message: logError && logError.message ? logError.message : String(logError)
+          }));
+        }
+      }
+      throw timeoutError;
+    }
     var waitMs = Math.max(0, Date.now() - waitStartedAt);
     if (waitMs >= LOCK_WARN_MS && typeof console !== 'undefined' && console.warn) {
       console.warn(JSON.stringify({ event: 'script_lock_contention', waitMs: waitMs }));

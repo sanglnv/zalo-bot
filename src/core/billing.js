@@ -38,7 +38,7 @@ function calculateBill(items, discount) {
   return {
     subtotal: subtotal,
     discountAmount: discountAmount,
-    totalAmount: subtotal - discountAmount
+    totalAmount: Math.round(subtotal - discountAmount)
   };
 }
 

@@ -113,7 +113,7 @@ Configure these under **Apps Script → Project Settings → Script Properties**
 | `TELEGRAM_WEBHOOK_SECRET` | Random Telegram `secret_token`; same value is stored as a Worker secret |
 | `GAS_GATEWAY_TOKEN` | Separate random gateway-to-GAS token; same value is stored as a Worker secret |
 | `TELEGRAM_OPERATIONS_CHAT_ID` | **Required.** Staff chat where confirmed orders (Telegram *and* Zalo) are notified, and where staff reply `/thanhtoan <orderId>` to send the payment QR — QR is no longer sent to the customer automatically at confirm time. See `docs/bot-order-webhook-integration.md`. |
-| `TELEGRAM_ADMIN_USER_IDS` | Optional, comma-separated Telegram user ids allowed to run `/thanhtoan`. Unset = anyone who can post in the ops chat is trusted. |
+| `TELEGRAM_ADMIN_USER_IDS` | **Required.** Comma-separated Telegram user ids allowed to run `/thanhtoan`. Both GAS and Worker fail closed when it is missing or empty. |
 | `PAYMENT_TIMEOUT_MINUTES` | Optional unpaid-order timeout; defaults to `30` |
 
 Example catalog value:

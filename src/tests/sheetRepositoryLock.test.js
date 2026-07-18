@@ -139,3 +139,48 @@ test('script lock emits a structured contention warning after one second', () =>
     waitMs: 1200
   });
 });
+
+test('script lock timeout appends a structured ErrorLogs entry without reacquiring the lock', () => {
+  delete require.cache[require.resolve('../repositories/SheetRepositorySupport.gs')];
+  const sheets = new Map();
+  function createSheet() {
+    const values = [];
+    return {
+      values,
+      getLastRow: () => values.length,
+      appendRow: (row) => values.push([...row])
+    };
+  }
+  const book = {
+    getSheetByName: (name) => sheets.get(name) || null,
+    insertSheet(name) { const sheet = createSheet(); sheets.set(name, sheet); return sheet; }
+  };
+  global.PropertiesService = {
+    getScriptProperties: () => ({ getProperty: () => 'sheet-id' })
+  };
+  global.SpreadsheetApp = { openById: () => book };
+  let tryLockCalls = 0;
+  global.LockService = {
+    getScriptLock: () => ({
+      tryLock() { tryLockCalls += 1; return false; },
+      releaseLock() {}
+    })
+  };
+  const originalNow = Date.now;
+  const readings = [1_000, 31_000];
+  Date.now = () => readings.shift();
+  try {
+    const support = require('../repositories/SheetRepositorySupport.gs');
+    assert.throws(() => support.withScriptLock(() => undefined), /Could not acquire script lock/);
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(tryLockCalls, 1, 'timeout logging must not attempt the same lock again');
+  const errorRows = sheets.get('ErrorLogs').values;
+  assert.deepEqual(errorRows[0], ['timestamp', 'context', 'message', 'stack']);
+  const context = JSON.parse(errorRows[1][1]);
+  assert.deepEqual(context, {
+    stage: 'script_lock_timeout', waitMs: 30000, timeoutMs: 30000
+  });
+});

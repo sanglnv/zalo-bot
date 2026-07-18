@@ -82,8 +82,8 @@ usable within its 48h window, same assumption the old immediate-send flow alread
 
 This applies to **both** Telegram and Zalo customers — Zalo has no ops channel of its own, so
 Zalo-originated confirmations are also notified in the single Telegram ops chat, tagged
-`Kênh: zalo`. `TELEGRAM_ADMIN_USER_IDS` (optional, comma-separated Telegram user ids) restricts who
-can run `/thanhtoan`; if unset, anyone who can post in the ops chat is trusted.
+`Kênh: zalo`. `TELEGRAM_ADMIN_USER_IDS` (required, comma-separated Telegram user ids) restricts who
+can run `/thanhtoan`. Both GAS and the Worker fail closed when this setting is missing or empty.
 
 **Operational risk:** if `TELEGRAM_OPERATIONS_CHAT_ID` is misconfigured or the ops chat is muted,
 confirmed orders are silently never notified to staff and the customer never receives a QR at all
@@ -151,6 +151,6 @@ As of 2026-07-18 the POS exposes member actions (`getMemberProfile`, `listMember
 
 ## What still uses Sheets
 
-`SheetOrderRepository.gs` and its test remain in the repo, fully working and unit-tested, but nothing
-in the live app wires it in anymore — kept only in case of rollback. `Customers`, `ConversationStates`,
+`SheetOrderRepository.gs` remains live for Fast Path snapshot sync and payment resolution, although
+the normal GAS/POS path uses `BotOrderRepository`. `Customers`, `ConversationStates`,
 `ProcessedUpdates`, `ErrorLogs`, `OperationMetrics`, and the Fast Path sync tables are unaffected.
