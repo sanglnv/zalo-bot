@@ -2,7 +2,7 @@
 
 function buildPaymentConfirmationOrderService() {
   return OrderService.create({
-    orderRepository: SheetOrderRepository(),
+    orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
     getCatalog: TelegramRuntime.loadCatalog,
@@ -89,23 +89,61 @@ function registerSheetMenuTrigger() {
 function onOpenBuildMenu() {
   SpreadsheetApp.getUi()
     .createMenu('Zalo Clawbot')
-    .addItem('Xác nhận thanh toán đơn đang chọn', 'confirmSelectedOrderPayment')
+    .addItem('Xem đơn chờ thanh toán', 'listPendingOrdersForStaff')
+    .addItem('Xác nhận thanh toán theo mã đơn', 'confirmSelectedOrderPayment')
     .addToUi();
 }
 
-function selectedOrder() {
-  var sheet = SpreadsheetApp.getActiveSheet();
-  var range = sheet && sheet.getActiveRange();
-  if (!sheet || sheet.getName() !== 'Orders' || !range || range.getNumRows() !== 1 || range.getRow() < 2) {
+// Orders no longer live in a local Sheet -- they are created/read through
+// the POS Bot Order Webhook (BotOrderRepository). There is no Sheet row for
+// staff to click on anymore, so this reads live pending orders from the
+// webhook and lets staff pick the order id from that list.
+function listPendingOrdersForStaff() {
+  var ui = SpreadsheetApp.getUi();
+  var cutoff = new Date().toISOString();
+  var pending;
+  try {
+    pending = BotOrderRepository().findAwaitingPaymentOlderThan(cutoff, 20);
+  } catch (error) {
+    ui.alert('Không lấy được danh sách đơn đang chờ: ' + (error && error.message ? error.message : String(error)));
+    return;
+  }
+  if (!pending.length) {
+    ui.alert('Hiện không có đơn nào đang chờ thanh toán.');
+    return;
+  }
+  var lines = pending.map(function (order) {
+    return order.orderId + ' — ' + order.totalAmount + ' — tạo lúc ' + order.createdAt;
+  });
+  ui.alert('Đơn đang chờ thanh toán (' + pending.length + ')', lines.join('\n'), ui.ButtonSet.OK);
+}
+
+function promptOrderId(ui) {
+  var response = ui.prompt(
+    'Xác nhận thanh toán',
+    'Nhập mã đơn hàng (orderId) cần xác nhận:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return null;
+  var orderId = String(response.getResponseText() || '').trim();
+  return orderId || null;
+}
+
+function selectedOrder(ui) {
+  var orderId = promptOrderId(ui);
+  if (!orderId) return null;
+  var order;
+  try {
+    order = BotOrderRepository().findById(orderId);
+  } catch (error) {
+    ui.alert('Không đọc được đơn hàng: ' + (error && error.message ? error.message : String(error)));
     return null;
   }
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var orderIdColumn = headers.indexOf('orderId') + 1;
-  var amountColumn = headers.indexOf('totalAmount') + 1;
-  if (!orderIdColumn || !amountColumn) return null;
-  var orderId = String(sheet.getRange(range.getRow(), orderIdColumn).getValue() || '').trim();
-  if (!orderId) return null;
-  return { orderId: orderId, totalAmount: sheet.getRange(range.getRow(), amountColumn).getValue() };
+  if (!order) {
+    ui.alert('Không tìm thấy đơn hàng ' + orderId + '.');
+    return null;
+  }
+  return { orderId: order.orderId, totalAmount: order.totalAmount };
 }
 
 function activeConfirmer(ui) {
@@ -122,11 +160,8 @@ function activeConfirmer(ui) {
 
 function confirmSelectedOrderPaymentWithoutMetrics() {
   var ui = SpreadsheetApp.getUi();
-  var selected = selectedOrder();
-  if (!selected) {
-    ui.alert('Hãy chọn đúng một dòng có orderId trên sheet Orders.');
-    return;
-  }
+  var selected = selectedOrder(ui);
+  if (!selected) return;
   var decision = ui.alert(
     'Xác nhận thanh toán',
     'Xác nhận đã nhận thanh toán cho đơn ' + selected.orderId +
@@ -171,6 +206,7 @@ if (typeof module !== 'undefined' && module.exports) {
     processOrderPayment: processOrderPayment,
     registerSheetMenuTrigger: registerSheetMenuTrigger,
     onOpenBuildMenu: onOpenBuildMenu,
+    listPendingOrdersForStaff: listPendingOrdersForStaff,
     confirmSelectedOrderPayment: confirmSelectedOrderPayment
   };
 }

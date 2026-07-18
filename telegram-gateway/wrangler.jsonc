@@ -15,7 +15,7 @@
 
   "vars": {
     "PUBLIC_WEBHOOK_URL": "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
-    "FAST_PATH_ENABLED": "true",
+    "FAST_PATH_ENABLED": "false",
     "PAYMENT_TIMEOUT_MINUTES": "30"
   },
 
@@ -102,6 +102,7 @@
       "TELEGRAM_BOT_TOKEN",
       "GAS_WEB_APP_URL",
       "GAS_GATEWAY_TOKEN",
+      "GAS_ADMIN_API_TOKEN",
       "TELEGRAM_OPERATIONS_CHAT_ID",
       "TELEGRAM_ADMIN_USER_IDS",
       "VIETQR_BANK_ID",

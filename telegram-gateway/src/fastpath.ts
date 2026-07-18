@@ -1107,11 +1107,11 @@ export class TelegramSession extends DurableObject<Env> {
     const action = typeof inbound.payload?.action === "string" ? inbound.payload.action : "";
     const draft = this.adminDraft(chatId);
 
-    if (command === "/huyadmin") {
+    if (command === "/huyquanly" || command === "/huyadmin") {
       this.clearAdminDraft(chatId);
       return this.adminMessage(chatId, "Đã hủy thao tác quản trị.");
     }
-    if (command === "/admin" || action === "admin_menu") {
+    if (command === "/quanly" || command === "/admin" || action === "admin_menu") {
       this.clearAdminDraft(chatId);
       return [{
         method: "sendMessage",
@@ -1129,7 +1129,7 @@ export class TelegramSession extends DurableObject<Env> {
     }
     if (command === "/themon" || action === "admin_add") {
       this.saveAdminDraft(chatId, "ADD_NAME", {});
-      return this.adminMessage(chatId, "Nhập tên món mới. Gõ /huyadmin để hủy.");
+      return this.adminMessage(chatId, "Nhập tên món mới. Gõ /huyquanly để hủy.");
     }
     if (action === "admin_inventory") {
       return this.adminMessage(chatId, "Dùng /kho CAT_ID để xem tồn theo danh mục, hoặc /ton PRODUCT_ID SỐ_LƯỢNG để đặt tồn hôm nay.");
@@ -1174,7 +1174,7 @@ export class TelegramSession extends DurableObject<Env> {
       ).bind(active, new Date().toISOString(), productId).run();
       return this.adminMessage(
         chatId,
-        result.meta.changes ? `${productId}: ${active ? "đang bán" : "đã inactive"}.` : "Không tìm thấy món."
+        result.meta.changes ? `${productId}: ${active ? "đang bán" : "đã tắt bán"}.` : "Không tìm thấy món."
       );
     }
     if (command === "/kho") {
@@ -1265,7 +1265,7 @@ export class TelegramSession extends DurableObject<Env> {
       const category = await this.env.CATALOG_DB.prepare(
         "SELECT name FROM categories WHERE category_id = ? AND active = 1"
       ).bind(String(draft.data.categoryId)).first<{ name: string }>();
-      if (!category) return this.adminMessage(chatId, "Danh mục không còn hoạt động. Hãy /huyadmin và thử lại.");
+      if (!category) return this.adminMessage(chatId, "Danh mục không còn hoạt động. Hãy /huyquanly và thử lại.");
       const now = new Date().toISOString();
       await this.env.CATALOG_DB.prepare(
         `INSERT INTO products(

@@ -6,6 +6,8 @@
 !src/adapters/telegram/**/*.gs
 !src/adapters/zalo/**/*.js
 !src/adapters/zalo/**/*.gs
+!src/adapters/menu/**/*.js
+!src/adapters/menu/**/*.gs
 !src/adapters/*.js
 !src/adapters/*.gs
 !src/admin/**/*.js

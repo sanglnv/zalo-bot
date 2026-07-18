@@ -62,11 +62,14 @@ Các lệnh chỉ chạy trong private chat của user có ID nằm trong `TELEG
 - `/themon`: thêm món theo luồng tên → giá → danh mục → tồn.
 - `/suamon PRODUCT_ID`: sửa tên → giá của món hiện có; gửi `-` ở một bước để giữ nguyên giá trị hiện tại.
 - `/thanhtoan`: khách dùng trong chat riêng để nhận QR của đơn đang chờ; admin dùng trong group vận hành bằng cách reply thông báo `ĐƠN MỚI`. Admin cũng có thể dùng dạng đầy đủ `/thanhtoan CHAT_ID ORDER_ID`.
-- `/huyadmin`: hủy luồng thêm/sửa đang dở.
+- `/quanly`: mở bảng quản trị menu.
+- `/huyquanly`: hủy luồng thêm/sửa đang dở.
 
 Flow vận hành đơn Telegram fast path: khách xác nhận → bot giữ tồn và báo group chuẩn bị món → admin reply thông báo đơn bằng `/thanhtoan` → bot gửi QR cho đúng chat khách → nhân viên xác nhận tiền theo quy trình thanh toán hiện có. Lệnh trong group chỉ được chấp nhận khi group trùng `TELEGRAM_OPERATIONS_CHAT_ID` và người gửi nằm trong `TELEGRAM_ADMIN_USER_IDS`.
 
-Khi khách gửi `/start`, Worker chỉ gửi **một** message ảnh `public/welcome-order-flow.png` từ static assets. Caption chào mừng và ba thao tác **Xem danh mục**, **Trạng thái đơn**, **Trợ giúp** nằm chung dưới ảnh; không gửi thêm message chữ riêng. URL ảnh được tạo từ `PUBLIC_WEBHOOK_URL`.
+Lệnh khách hàng: `/batdau`, `/danhmuc`, `/giohang`, `/dathang`, `/xemdon`, `/huydon`, `/trogiup`, `/thanhtoan`. `/start` và các lệnh tiếng Anh cũ được giữ làm alias tương thích, nhưng không còn hiển thị trong hướng dẫn chính.
+
+Khi khách gửi `/batdau` (hoặc alias hệ thống `/start`), Worker chỉ gửi **một** message ảnh `public/welcome-order-flow.png` từ static assets. Caption chào mừng, ba thao tác **Xem danh mục**, **Trạng thái đơn**, **Trợ giúp**, và nút URL **Hướng dẫn dành cho khách hàng** nằm chung dưới ảnh; không gửi thêm message chữ riêng. Trang hướng dẫn public được phục vụ từ `public/huong-dan-khach-hang.html` trên cùng domain Worker, không yêu cầu đăng nhập ChatGPT.
 
 Deploy và lưu URL `workers.dev` được Wrangler trả về:
 
@@ -80,7 +83,7 @@ npm run deploy
 ## Production verification
 
 1. Chạy GAS `healthCheck()` và xác nhận `telegramWebhook.status === "ok"`, `url === expectedUrl`, `pendingUpdates === 0`, không có lỗi webhook mới.
-2. Gửi `/start`, `catalog`, thêm sản phẩm và bấm callback trên Telegram. Callback phải hết spinner ngay; bot phải trả lời đúng một lần.
+2. Gửi `/batdau`, `/danhmuc`, thêm sản phẩm và bấm callback trên Telegram. Callback phải hết spinner ngay; bot phải trả lời đúng một lần.
 3. Trong Cloudflare Workers Logs, xác nhận `telegram_webhook_healthy`, `gas_gateway_healthy`, rồi xác nhận `telegram_update_queued` và `telegram_update_forwarded` có cùng `updateId` khi test chat.
 4. Theo dõi `telegram_dlq_not_empty`; staff chat cũng nhận cảnh báo chủ động. Nếu xuất hiện, tra `updateId` trong logs và xử lý nguyên nhân GAS trước khi replay thủ công; không tạo consumer tự xoá DLQ.
 5. Khi fast path được bật, xác nhận snapshot v2 tăng `revision` theo từng customer và mọi `inventory_effects`, `queue_outbox`, `notification_outbox` đều được drain; theo dõi log và dùng `FAST_PATH_ENABLED=false` để rollback toàn bộ nếu cần.

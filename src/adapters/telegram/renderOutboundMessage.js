@@ -42,7 +42,7 @@ function renderOutboundMessage(message, chatId, inboundMapper) {
       method: 'sendMessage',
       params: {
         chat_id: id,
-        text: typeof content.title === 'string' ? content.title : 'Catalog',
+        text: typeof content.title === 'string' ? content.title : 'Danh mục món',
         reply_markup: {
           inline_keyboard: content.items.map(function (product) {
             return [{

@@ -58,7 +58,7 @@ function adminOrderSummary(order) {
 
 function adminListPending(rawLimit) {
   var limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50) : 20;
-  var orders = SheetOrderRepository().findAwaitingPaymentOlderThan(new Date().toISOString(), limit);
+  var orders = BotOrderRepository().findAwaitingPaymentOlderThan(new Date().toISOString(), limit);
   return { ok: true, orders: orders.map(adminOrderSummary) };
 }
 
@@ -66,7 +66,7 @@ function adminGetOrder(orderId) {
   if (typeof orderId !== 'string' || orderId.trim() === '') {
     return { ok: false, error: 'MISSING_ORDER_ID' };
   }
-  var order = SheetOrderRepository().findById(orderId);
+  var order = BotOrderRepository().findById(orderId);
   if (!order) return { ok: false, error: 'ORDER_NOT_FOUND' };
   var customer = SheetCustomerRepository().findById(order.customerId);
   return {
@@ -126,11 +126,19 @@ function adminFetchLiveCatalogFromGateway() {
 function adminGetCatalog() {
   var liveCatalog = adminFetchLiveCatalogFromGateway();
   if (liveCatalog) return { ok: true, source: 'd1_fast_path', catalog: liveCatalog };
-  // Fallback only: CATALOG_JSON is a transitional Script Property that can
-  // drift from the live D1 catalog used by the Telegram fast path (see
-  // docs/telegram-fast-path-phase3.md) — used only if the gateway is
-  // unreachable (e.g. fast path disabled, Worker down).
+  // Fallback only: TelegramRuntime.loadCatalog() now reads the POS Bot Order
+  // Webhook directly, which can drift from the live D1 catalog used by the
+  // Telegram fast path (see docs/telegram-fast-path-phase3.md) — used only
+  // if the gateway is unreachable (e.g. fast path disabled, Worker down).
   return { ok: true, source: 'catalog_json_fallback', catalog: TelegramRuntime.loadCatalog() };
+}
+
+// Always reads the POS Bot Order Webhook directly, unlike adminGetCatalog()
+// which prefers the D1 mirror. This is the source-of-truth read the
+// telegram-gateway Worker's scheduled catalog sync (POS -> D1) polls, so it
+// must never silently fall back to D1 itself -- that would sync D1 from D1.
+function adminGetCatalogFromPos() {
+  return { ok: true, source: 'bot_order_webhook', catalog: BotOrderWebhookClient.fetchMenuCatalog() };
 }
 
 function adminDispatchAction(action, params) {
@@ -138,6 +146,7 @@ function adminDispatchAction(action, params) {
   if (action === 'get_order') return adminGetOrder(params.orderId);
   if (action === 'confirm_payment') return adminConfirmPayment(params.orderId, params.confirmedBy);
   if (action === 'get_catalog') return adminGetCatalog();
+  if (action === 'get_catalog_from_pos') return adminGetCatalogFromPos();
   return { ok: false, error: 'UNKNOWN_ACTION' };
 }
 
@@ -180,6 +189,7 @@ if (typeof module !== 'undefined' && module.exports) {
     adminRequestParams: adminRequestParams,
     adminDispatchAction: adminDispatchAction,
     adminOrderSummary: adminOrderSummary,
-    adminFetchLiveCatalogFromGateway: adminFetchLiveCatalogFromGateway
+    adminFetchLiveCatalogFromGateway: adminFetchLiveCatalogFromGateway,
+    adminGetCatalogFromPos: adminGetCatalogFromPos
   };
 }

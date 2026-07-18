@@ -9,16 +9,16 @@ const SystemSetup = require('../admin/SystemSetup.gs');
 const validProperties = {
   SPREADSHEET_ID: 'sheet-1',
   TELEGRAM_BOT_TOKEN: 'token',
-  CATALOG_JSON: JSON.stringify([
-    { productId: 'p1', name: 'Coffee', price: 35000, isAvailable: true }
-  ]),
+  BOT_ORDER_WEBHOOK_URL: 'https://script.google.com/macros/s/bot-order-webhook/exec',
+  BOT_ORDER_WEBHOOK_SECRET: 'bot-order-webhook-secret',
   VIETQR_BANK_ID: '970407',
   VIETQR_ACCOUNT_NO: '123',
   VIETQR_ACCOUNT_NAME: 'SHOP',
   WEB_APP_URL: 'https://script.google.com/macros/s/example/exec',
   TELEGRAM_WEBHOOK_URL: 'https://telegram-gateway.example.workers.dev',
   TELEGRAM_WEBHOOK_SECRET: 'telegram-webhook-secret',
-  GAS_GATEWAY_TOKEN: 'gas-gateway-token'
+  GAS_GATEWAY_TOKEN: 'gas-gateway-token',
+  TELEGRAM_OPERATIONS_CHAT_ID: '-100200300'
 };
 
 function installProperties(properties) {
@@ -27,15 +27,38 @@ function installProperties(properties) {
   };
 }
 
-test('setup validation reports missing properties and malformed catalog data', () => {
+function installMenuSource(result) {
+  global.BotOrderWebhookClient = {
+    fetchMenuCatalog: () => {
+      if (result && result.error) throw new Error(result.error);
+      return result && result.products
+        ? result.products
+        : [{ productId: 'p1', name: 'Coffee', price: 35000, isAvailable: true }];
+    }
+  };
+}
+
+test('setup validation reports missing properties', () => {
   installProperties({});
   assert.throws(() => SystemSetup.validateConfiguration(), /Missing required script properties/);
-  installProperties({ ...validProperties, CATALOG_JSON: '{bad' });
-  assert.throws(() => SystemSetup.validateConfiguration(), /valid JSON/);
+  installProperties(validProperties);
+  assert.deepEqual(SystemSetup.validateConfiguration(), { properties: 'ok' });
+});
+
+test('checkBotOrderWebhook reports live webhook failures without throwing', () => {
+  installProperties(validProperties);
+  installMenuSource({ error: 'Bot order webhook returned HTTP 503' });
+  assert.deepEqual(SystemSetup.checkBotOrderWebhook(), {
+    status: 'error',
+    message: 'Bot order webhook returned HTTP 503'
+  });
+  installMenuSource();
+  assert.deepEqual(SystemSetup.checkBotOrderWebhook(), { status: 'ok', catalogProducts: 1 });
 });
 
 test('setup creates every repository sheet and validates headers without sample rows', () => {
   installProperties(validProperties);
+  installMenuSource();
   const created = [];
   global.SheetRepositorySupport = {
     writableSheet(name, headers) {
@@ -54,14 +77,15 @@ test('setup creates every repository sheet and validates headers without sample 
   assert.equal(result.configuration.properties, 'ok');
   assert.equal(result.configuration.catalogProducts, 1);
   assert.deepEqual(result.sheets, [
-    'Orders', 'Customers', 'ConversationStates', 'ProcessedUpdates', 'FastPathSyncedUpdates',
+    'Customers', 'ConversationStates', 'ProcessedUpdates', 'FastPathSyncedUpdates',
     'FastPathSyncState', 'ZaloProcessedUpdates', 'ErrorLogs', 'OperationMetrics'
   ]);
-  assert.equal(created.length, 9);
+  assert.equal(created.length, 8);
 });
 
 test('health check exposes Telegram queue and last webhook error', () => {
   installProperties(validProperties);
+  installMenuSource();
   global.SheetRepositorySupport = {
     writableSheet(name, headers) {
       return {
@@ -88,6 +112,7 @@ test('health check exposes Telegram queue and last webhook error', () => {
 
 test('health check reports a Telegram webhook that bypasses the gateway', () => {
   installProperties(validProperties);
+  installMenuSource();
   global.SheetRepositorySupport = {
     writableSheet(name, headers) {
       return {

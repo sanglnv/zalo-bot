@@ -8,7 +8,7 @@ const { dispatchNotifications } = require('../../adapters/notificationDispatcher
 test('payment confirmation and expiry select separate approved ZBS templates', () => {
   const ids = { paymentConfirmed: 'paid-template', expired: 'expired-template' };
   const paid = renderZbsTemplateMessage({
-    type: 'text', content: { text: 'Payment confirmed for order o1. Thank you!', orderId: 'o1' }
+    type: 'text', content: { text: 'Đã xác nhận thanh toán cho đơn #o1. Cảm ơn bạn!', orderId: 'o1' }
   }, 'u1', ids);
   const expired = renderZbsTemplateMessage({
     type: 'text', content: { text: 'Đơn hàng #o2 đã hết hạn do quá thời gian chờ thanh toán.', orderId: 'o2' }
@@ -47,7 +47,7 @@ test('notification registry dispatches Zalo links through ZBS, not the normal Se
 
   dispatchNotifications(
     { platformLinks: [{ platform: 'zalo', platformUserId: 'u1' }] },
-    [{ type: 'text', content: { text: 'Payment confirmed for order o1. Thank you!', orderId: 'o1' } }],
+    [{ type: 'text', content: { text: 'Đã xác nhận thanh toán cho đơn #o1. Cảm ơn bạn!', orderId: 'o1' } }],
     registry
   );
   assert.equal(calls.length, 1);

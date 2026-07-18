@@ -52,6 +52,7 @@ function fixture(options: { queueFailure?: boolean; dlqBacklog?: number } = {}) 
     TELEGRAM_BOT_TOKEN: "bot-token",
     GAS_WEB_APP_URL: "https://script.google.com/macros/s/deployment/exec",
     GAS_GATEWAY_TOKEN: "gas-secret",
+    GAS_ADMIN_API_TOKEN: "admin-secret",
     TELEGRAM_OPERATIONS_CHAT_ID: "operations-chat",
     TELEGRAM_ADMIN_USER_IDS: "admin-user",
     PUBLIC_WEBHOOK_URL: "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev",
@@ -438,15 +439,19 @@ describe("Telegram Durable Object fast path", () => {
     }));
 
     telegramFetch.mockClear();
+    // The welcome message and public guide must still be sent as one photo
+    // message while the broader customer fast-path rollout is disabled.
+    fastPathEnvironment.FAST_PATH_ENABLED = "false";
     const startResponse = await worker.fetch(
       webhookRequest({
         update_id: 700159,
-        message: { chat: { id: 7001, type: "private" }, text: "/start" },
+        message: { chat: { id: 7001, type: "private" }, text: "/batdau" },
       }),
       fastPathEnvironment,
       createExecutionContext(),
     );
     expect(startResponse.status).toBe(200);
+    expect(queued).toEqual([]);
     const welcomeCalls = telegramFetch.mock.calls.filter(([input]) =>
       String(input).includes("/sendPhoto")
     );
@@ -462,13 +467,18 @@ describe("Telegram Durable Object fast path", () => {
           { text: "📦 Trạng thái đơn", callback_data: "status" },
           { text: "❓ Trợ giúp", callback_data: "help" },
         ],
+        [{
+          text: "📖 Hướng dẫn dành cho khách hàng",
+          url: "https://zalo-clawbot-telegram-gateway.sunka-bot.workers.dev/huong-dan-khach-hang.html",
+        }],
       ] },
     }));
 
+    // Admin commands also remain available with that rollout flag disabled.
     await worker.fetch(
       webhookRequest({
         update_id: 70016,
-        message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/admin" },
+        message: { from: { id: 7001 }, chat: { id: 7001, type: "private" }, text: "/quanly" },
       }),
       fastPathEnvironment,
       createExecutionContext(),
@@ -783,6 +793,126 @@ describe("DLQ monitoring", () => {
       drop_pending_updates: false,
       secret_token: "telegram-secret",
     }));
+  });
+});
+
+describe("POS catalog sync (keeps Fast Path D1 in sync with BotOrderWebhookClient)", () => {
+  async function seedSchema() {
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS categories (category_id TEXT PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL, active INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+    );
+    await workerEnv.CATALOG_DB.exec(
+      "CREATE TABLE IF NOT EXISTS products (product_id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL, is_available INTEGER NOT NULL, sort_order INTEGER NOT NULL, updated_at TEXT NOT NULL, category_id TEXT NOT NULL DEFAULT 'CAT_OTHER', category_name TEXT NOT NULL DEFAULT 'Khác')"
+    );
+    await workerEnv.CATALOG_DB.exec("DELETE FROM products");
+    await workerEnv.CATALOG_DB.exec("DELETE FROM categories");
+  }
+
+  function catalogFetchMock(catalogBody: unknown) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("action=get_catalog_from_pos")) return Response.json(catalogBody);
+      if (url.includes("getWebhookInfo")) {
+        return Response.json({
+          ok: true,
+          result: { url: "https://gateway.example/webhook", pending_update_count: 0 },
+        });
+      }
+      return new Response("GATEWAY_OK", { status: 200 });
+    });
+  }
+
+  it("upserts products and new categories from the POS webhook into D1", async () => {
+    await seedSchema();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", catalogFetchMock({
+      ok: true,
+      source: "bot_order_webhook",
+      catalog: [
+        { productId: "p1", name: "Cà phê", price: 35000, isAvailable: true, categoryId: "CAT_CAFE", categoryName: "CAFE" },
+        { productId: "p2", name: "Trà đá", price: 10000, isAvailable: false, categoryId: "CAT_TEA", categoryName: "TRÀ" },
+      ],
+    }));
+    const { environment } = fixture();
+
+    await worker.scheduled(
+      { cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry: vi.fn() },
+      environment,
+    );
+
+    const calledUrl = vi.mocked(fetch).mock.calls
+      .map((call) => String(call[0]))
+      .find((url) => url.includes("get_catalog_from_pos"));
+    expect(calledUrl).toContain("platform=admin");
+    expect(calledUrl).toContain("admin_token=admin-secret");
+
+    const products = await workerEnv.CATALOG_DB.prepare(
+      "SELECT * FROM products ORDER BY product_id"
+    ).all();
+    expect(products.results).toEqual([
+      expect.objectContaining({
+        product_id: "p1", name: "Cà phê", price: 35000, is_available: 1, category_id: "CAT_CAFE",
+      }),
+      expect.objectContaining({
+        product_id: "p2", name: "Trà đá", price: 10000, is_available: 0, category_id: "CAT_TEA",
+      }),
+    ]);
+    const categories = await workerEnv.CATALOG_DB.prepare(
+      "SELECT * FROM categories ORDER BY sort_order"
+    ).all();
+    expect(categories.results.map((row) => (row as { category_id: string }).category_id)).toEqual([
+      "CAT_CAFE", "CAT_TEA",
+    ]);
+  });
+
+  it("preserves hand-curated category sort_order/active on conflict, only updating name", async () => {
+    await seedSchema();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await workerEnv.CATALOG_DB.prepare(
+      "INSERT INTO categories(category_id, name, sort_order, active, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind("CAT_CAFE", "Old Name", 99, 0, "2020-01-01T00:00:00.000Z").run();
+    vi.stubGlobal("fetch", catalogFetchMock({
+      ok: true,
+      catalog: [
+        { productId: "p1", name: "Cà phê", price: 35000, isAvailable: true, categoryId: "CAT_CAFE", categoryName: "New Name" },
+      ],
+    }));
+    const { environment } = fixture();
+
+    await worker.scheduled(
+      { cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry: vi.fn() },
+      environment,
+    );
+
+    const category = await workerEnv.CATALOG_DB.prepare(
+      "SELECT * FROM categories WHERE category_id = ?"
+    ).bind("CAT_CAFE").first();
+    expect(category).toEqual(expect.objectContaining({ name: "New Name", sort_order: 99, active: 0 }));
+  });
+
+  it("logs catalog_sync_failed without throwing when the POS admin endpoint errors", async () => {
+    await seedSchema();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("get_catalog_from_pos")) return Response.json({ ok: false, error: "UNAUTHORIZED" });
+      if (url.includes("getWebhookInfo")) {
+        return Response.json({
+          ok: true,
+          result: { url: "https://gateway.example/webhook", pending_update_count: 0 },
+        });
+      }
+      return new Response("GATEWAY_OK", { status: 200 });
+    }));
+    const { environment } = fixture();
+
+    await worker.scheduled(
+      { cron: "*/5 * * * *", scheduledTime: Date.now(), noRetry: vi.fn() },
+      environment,
+    );
+
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("catalog_sync_failed"));
   });
 });
 

@@ -246,6 +246,105 @@ async function inspectGasGateway(env: Env): Promise<void> {
   log("log", "gas_gateway_healthy");
 }
 
+interface PosCatalogProduct {
+  productId: string;
+  name: string;
+  price: number;
+  isAvailable: boolean;
+  categoryId?: string | null;
+  categoryName?: string | null;
+}
+
+function isPosCatalogProduct(value: unknown): value is PosCatalogProduct {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.productId === "string" && candidate.productId !== "" &&
+    typeof candidate.name === "string" && candidate.name !== "" &&
+    typeof candidate.price === "number" && Number.isFinite(candidate.price) &&
+    typeof candidate.isAvailable === "boolean"
+  );
+}
+
+// Keeps the Fast Path D1 catalog (read by /internal/catalog, see
+// handleCatalogQuery above) in sync with the POS Bot Order Webhook, which is
+// GAS's source of truth for the menu (BotOrderWebhookClient.gs). Without
+// this, Telegram (Fast Path, reads D1) and Zalo (reads the POS webhook
+// directly through GAS) can show two different menus.
+//
+// Existing categories keep their hand-curated sort_order/active (see
+// migrations/0003_categories.sql) -- this job only touches name/updated_at
+// for categories it already knows about, and only assigns a default
+// sort_order/active=1 the first time it sees a brand new category. Product
+// sort_order is derived from the POS response order, restarting per
+// category, since the POS doesn't expose an explicit per-product sort key.
+async function syncCatalogFromPos(env: Env): Promise<void> {
+  const target = new URL(env.GAS_WEB_APP_URL);
+  target.searchParams.set("platform", "admin");
+  target.searchParams.set("action", "get_catalog_from_pos");
+  target.searchParams.set("admin_token", env.GAS_ADMIN_API_TOKEN);
+
+  const response = await fetch(target.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+    redirect: "follow",
+    signal: AbortSignal.timeout(30_000)
+  });
+  const body = await response.json<unknown>();
+  const envelope = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  if (!response.ok || !envelope || envelope.ok !== true || !Array.isArray(envelope.catalog)) {
+    throw new Error(
+      `get_catalog_from_pos failed: HTTP ${response.status}, body ${JSON.stringify(body)}`
+    );
+  }
+  const products = envelope.catalog;
+  if (!products.every(isPosCatalogProduct)) {
+    throw new Error("get_catalog_from_pos returned a malformed product in the catalog array");
+  }
+
+  const now = new Date().toISOString();
+  const categoryOrder: string[] = [];
+  const categoryNames = new Map<string, string>();
+  const perCategorySortOrder = new Map<string, number>();
+  const productStatements = products.map((product) => {
+    const categoryId = product.categoryId || "CAT_OTHER";
+    const categoryName = product.categoryName || categoryId;
+    if (!categoryNames.has(categoryId)) {
+      categoryNames.set(categoryId, categoryName);
+      categoryOrder.push(categoryId);
+    }
+    const sortOrder = perCategorySortOrder.get(categoryId) ?? 0;
+    perCategorySortOrder.set(categoryId, sortOrder + 1);
+    return env.CATALOG_DB.prepare(
+      `INSERT INTO products(product_id, name, price, is_available, sort_order, updated_at, category_id, category_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(product_id) DO UPDATE SET
+         name = excluded.name, price = excluded.price, is_available = excluded.is_available,
+         sort_order = excluded.sort_order, updated_at = excluded.updated_at,
+         category_id = excluded.category_id, category_name = excluded.category_name`
+    ).bind(
+      product.productId, product.name, Math.round(product.price), product.isAvailable ? 1 : 0,
+      sortOrder, now, categoryId, categoryName
+    );
+  });
+  const categoryStatements = categoryOrder.map((categoryId, index) =>
+    env.CATALOG_DB.prepare(
+      `INSERT INTO categories(category_id, name, sort_order, active, updated_at)
+       VALUES (?, ?, ?, 1, ?)
+       ON CONFLICT(category_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`
+    ).bind(categoryId, categoryNames.get(categoryId), index, now)
+  );
+
+  if (categoryStatements.length > 0) await env.CATALOG_DB.batch(categoryStatements);
+  if (productStatements.length > 0) await env.CATALOG_DB.batch(productStatements);
+
+  log("log", "catalog_sync_completed", {
+    productCount: products.length,
+    categoryCount: categoryOrder.length
+  });
+}
+
 async function sendOperationsAlert(env: Env, text: string): Promise<void> {
   const chatId = env.TELEGRAM_OPERATIONS_CHAT_ID;
   if (!chatId) {
@@ -390,7 +489,32 @@ function isStartCommand(update: TelegramUpdate): boolean {
   const message = update.message as { text?: string } | undefined;
   const command = String(message?.text ?? "").trim().split(/\s+/)[0]
     ?.toLowerCase().split("@")[0];
-  return command === "/start" || command === "start";
+  return command === "/batdau" || command === "batdau" ||
+    command === "/start" || command === "start";
+}
+
+const TELEGRAM_VIETNAMESE_COMMANDS = [
+  { command: "batdau", description: "Bắt đầu đặt món" },
+  { command: "danhmuc", description: "Xem danh mục món đang bán" },
+  { command: "giohang", description: "Xem giỏ hàng hiện tại" },
+  { command: "dathang", description: "Kiểm tra và xác nhận giỏ hàng" },
+  { command: "xemdon", description: "Xem trạng thái đơn gần nhất" },
+  { command: "huydon", description: "Hủy giỏ hoặc đơn hiện tại" },
+  { command: "thanhtoan", description: "Nhận mã QR thanh toán" },
+  { command: "trogiup", description: "Xem hướng dẫn sử dụng bot" }
+];
+
+async function syncVietnameseCommandMenu(env: FastPathEnvironment): Promise<void> {
+  await sendTelegramCommands([
+    {
+      method: "setMyCommands",
+      params: { commands: TELEGRAM_VIETNAMESE_COMMANDS }
+    },
+    {
+      method: "setMyCommands",
+      params: { commands: TELEGRAM_VIETNAMESE_COMMANDS, language_code: "vi" }
+    }
+  ], env);
 }
 
 async function sendTelegramCommands(
@@ -453,6 +577,10 @@ async function handleFastPath(
       "/welcome-order-flow.png",
       env.PUBLIC_WEBHOOK_URL
     ).toString();
+    const customerGuideUrl = new URL(
+      "/huong-dan-khach-hang.html",
+      env.PUBLIC_WEBHOOK_URL
+    ).toString();
     result.commands = [{
       method: "sendPhoto",
       params: {
@@ -465,7 +593,8 @@ async function handleFastPath(
             [
               { text: "📦 Trạng thái đơn", callback_data: "status" },
               { text: "❓ Trợ giúp", callback_data: "help" }
-            ]
+            ],
+            [{ text: "📖 Hướng dẫn dành cho khách hàng", url: customerGuideUrl }]
           ]
         }
       }
@@ -652,7 +781,12 @@ export default {
     });
 
     const fastEnv = env as FastPathEnvironment;
-    if (isPaymentQrCommand(update)) {
+    // /thanhtoan is now also handled independently on the GAS side (ops
+    // chat -> BotOrderRepository/POS orders) when Fast Path is disabled.
+    // Only claim it here -- before it would otherwise reach the queue -- if
+    // Fast Path is actually enabled, or it would silently swallow every
+    // /thanhtoan for the non-Fast-Path flow too.
+    if (fastEnv.FAST_PATH_ENABLED === "true" && isPaymentQrCommand(update)) {
       const adminRequest = paymentQrAdminRequest(fastEnv, update);
       const customerRequest = adminRequest ? null : paymentQrCustomerRequest(update);
       const paymentRequest = adminRequest
@@ -722,6 +856,19 @@ export default {
       return new Response("OK", { status: 200 });
     }
 
+    if (isStartCommand(update)) {
+      try {
+        await syncVietnameseCommandMenu(fastEnv);
+      } catch (error) {
+        // Updating the Telegram slash-command menu is helpful but must never
+        // block the customer's first interaction or ordering flow.
+        log("warn", "telegram_command_menu_sync_failed", {
+          updateId: update.update_id,
+          error: errorMessage(error)
+        });
+      }
+    }
+
     // Stop the callback spinner at the edge, before waiting for a GAS cold start.
     try {
       if (await answerCallback(update, env)) {
@@ -736,7 +883,18 @@ export default {
     }
 
     const chatId = telegramChatId(update);
-    if (fastPathEnabled(fastEnv, chatId)) {
+    // Both stay unconditional, by existing design (see
+    // "processes an enabled chat directly..." test): /start always shows
+    // the Fast Path welcome banner, and admin accounts (TELEGRAM_ADMIN_USER_IDS)
+    // always operate in Fast Path -- including its own inventory/catalog
+    // admin commands (/quanly, /ton, /suamon) -- independent of the
+    // customer-facing ordering rollout flag. This means a Telegram account
+    // listed as an admin can NEVER exercise the non-Fast-Path (GAS/POS)
+    // order flow, even with FAST_PATH_ENABLED=false: use a non-admin
+    // account to test that path.
+    const adminFastPath = telegramAdminEnabled(fastEnv, update);
+    const startFastPath = isStartCommand(update);
+    if (chatId !== null && (fastPathEnabled(fastEnv, chatId) || adminFastPath || startFastPath)) {
       try {
         return await handleFastPath(update, chatId!, fastEnv);
       } catch (error) {
@@ -928,6 +1086,12 @@ export default {
       log("error", "gas_gateway_healthcheck_failed", {
         error: errorMessage(error)
       });
+    }
+
+    try {
+      await syncCatalogFromPos(env);
+    } catch (error) {
+      log("error", "catalog_sync_failed", { error: errorMessage(error) });
     }
   }
 } satisfies ExportedHandler<Env, TelegramUpdate | FastPathSyncMessage | OperationsOrderMessage>;

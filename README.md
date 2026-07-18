@@ -97,7 +97,11 @@ Configure these under **Apps Script → Project Settings → Script Properties**
 | --- | --- |
 | `SPREADSHEET_ID` | Datastore spreadsheet ID |
 | `TELEGRAM_BOT_TOKEN` | Bot token issued by BotFather |
-| `CATALOG_JSON` | JSON array of `{productId,name,price,isAvailable}` |
+| `BOT_ORDER_WEBHOOK_URL` | Web App URL of the external POS Apps Script's Bot Order Webhook (`doPost`) — handles menu reads and the full order lifecycle (create/read/complete/cancel) |
+| `BOT_ORDER_WEBHOOK_SECRET` | Shared secret sent in the JSON POST body as `secret` on every request (per the POS webhook's own contract) |
+| `BOT_ORDER_WEBHOOK_CHANNEL` | Optional. `order.channel` sent on `createOrder`. Defaults to `online_bot` |
+| `BOT_ORDER_WEBHOOK_SOURCE` | Optional. `order.source` sent on `createOrder`. Defaults to `clawbot` |
+| `BOT_ORDER_WEBHOOK_TABLE_ID` | Optional. `order.tableId` sent on `createOrder`, only if the POS requires one for bot/online orders |
 | `VIETQR_BANK_ID` | Bank BIN or supported bank identifier |
 | `VIETQR_ACCOUNT_NO` | Receiving account number |
 | `VIETQR_ACCOUNT_NAME` | Receiving account name |
@@ -108,7 +112,8 @@ Configure these under **Apps Script → Project Settings → Script Properties**
 | `TELEGRAM_WEBHOOK_URL` | Deployed Cloudflare Worker URL; Telegram must never point directly at GAS |
 | `TELEGRAM_WEBHOOK_SECRET` | Random Telegram `secret_token`; same value is stored as a Worker secret |
 | `GAS_GATEWAY_TOKEN` | Separate random gateway-to-GAS token; same value is stored as a Worker secret |
-| `TELEGRAM_OPERATIONS_CHAT_ID` | Optional staff group/private chat for new-order notifications on the normal Telegram path; missing value disables only this notification |
+| `TELEGRAM_OPERATIONS_CHAT_ID` | **Required.** Staff chat where confirmed orders (Telegram *and* Zalo) are notified, and where staff reply `/thanhtoan <orderId>` to send the payment QR — QR is no longer sent to the customer automatically at confirm time. See `docs/bot-order-webhook-integration.md`. |
+| `TELEGRAM_ADMIN_USER_IDS` | Optional, comma-separated Telegram user ids allowed to run `/thanhtoan`. Unset = anyone who can post in the ops chat is trusted. |
 | `PAYMENT_TIMEOUT_MINUTES` | Optional unpaid-order timeout; defaults to `30` |
 
 Example catalog value:
@@ -135,7 +140,7 @@ Expected customer mistakes do not use this fallback. Invalid commands, empty car
 
 ### Conversation UX and repeat orders
 
-Both `/command` and plain-text forms are accepted for `start`, `catalog`, `cart`, `checkout`, `cancel`, `status`, and `help`. Telegram commands containing the bot suffix (for example `/catalog@shop_bot`) are normalized by the core action parser.
+Các lệnh khách hàng chính đều dùng tiếng Việt không dấu: `/batdau`, `/danhmuc`, `/giohang`, `/dathang`, `/huydon`, `/xemdon`, `/trogiup` và `/thanhtoan`. Bot chấp nhận cả dạng có dấu `/` và dạng chữ thường; hậu tố tên bot như `/danhmuc@shop_bot` cũng được chuẩn hóa. `/start` cùng các lệnh tiếng Anh cũ vẫn là alias tương thích để deep link Telegram và khách cũ không bị gián đoạn.
 
 Catalog browsing is repeatable: reopening it in `BROWSING`, `CART`, or `CONFIRMING` preserves the cart. A customer in `AWAITING_PAYMENT` receives the active order, amount, QR/status/cancel actions instead of a transition error. `PAID`, `DONE`, `CANCELLED`, and `EXPIRED` can start a clean session through `catalog` or `new_order`; this atomically replaces stale conversation context with `{ "cart": [] }`.
 
@@ -233,7 +238,7 @@ Production must place a small HTTPS gateway (for example Cloudflare Worker, Clou
 
 ## Manual payment confirmation
 
-The `Orders` sheet is the single source of truth for payment state. A successful confirmation updates `status` to `PAID` and writes `confirmedAt` and `confirmedBy`; there is intentionally no separate `PaymentRepository`, avoiding two payment records that could drift apart. Existing `Orders` sheets receive the two new columns automatically on the next write, while older rows read them as `null`.
+Order and payment state now live in the external POS through the Bot Order Webhook (`BotOrderRepository.gs`), not in an `Orders` Sheet — see [docs/bot-order-webhook-integration.md](docs/bot-order-webhook-integration.md) for the full design. A successful confirmation calls the POS's `completeOrder` action; there is intentionally no separate `PaymentRepository`, avoiding two payment records that could drift apart. `SheetOrderRepository.gs` still exists and is still unit-tested, but nothing in the live app wires it in anymore.
 
 `OrderService.confirmPayment(orderId, confirmedBy)` runs under the same script-wide lock as chat handling. It verifies the order itself is still awaiting payment, updates it, advances the conversation only when it still points at that order, and returns normalized notifications plus the customer's platform links. Repeated or concurrent confirmation is reported as already resolved and does not send another customer notification.
 

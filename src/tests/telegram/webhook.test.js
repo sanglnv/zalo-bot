@@ -7,9 +7,14 @@ require.extensions['.gs'] = require.extensions['.js'];
 
 const OrderService = require('../../core/orderService');
 const TelegramClient = require('../../adapters/telegram/TelegramClient.gs');
-const { TelegramWebhook } = require('../../adapters/telegram/webhook.gs');
+const RealPaymentQrDispatch = require('../../admin/PaymentQrDispatch.gs');
 const { mapInboundMessage } = require('../../adapters/telegram/mapInboundMessage');
 const { renderOutboundMessage } = require('../../adapters/telegram/renderOutboundMessage');
+
+function requireGasFresh(path) {
+  delete require.cache[require.resolve(path)];
+  return require(path);
+}
 
 function setup(setupOptions = {}) {
   const fetchCalls = [];
@@ -25,11 +30,18 @@ function setup(setupOptions = {}) {
 
   global.PropertiesService = {
     getScriptProperties: () => ({
-      getProperty: (name) => name === 'TELEGRAM_BOT_TOKEN'
-        ? 'test-token'
-        : name === 'TELEGRAM_OPERATIONS_CHAT_ID' ? (setupOptions.opsChatId || null) : null
+      getProperty: (name) => {
+        if (name === 'TELEGRAM_BOT_TOKEN') return 'test-token';
+        if (name === 'TELEGRAM_OPERATIONS_CHAT_ID') return setupOptions.opsChatId || null;
+        if (name === 'TELEGRAM_ADMIN_USER_IDS') return setupOptions.adminUserIds || null;
+        return null;
+      }
     })
   };
+  // OperationsNotifier.gs (a real GAS-global module, see below) calls the
+  // global TelegramClient directly, independent of the client instance
+  // injected into TelegramWebhook.create() -- it needs its own global.
+  global.TelegramClient = TelegramClient;
   global.UrlFetchApp = {
     fetch(url, options) {
       const method = url.slice(url.lastIndexOf('/') + 1);
@@ -57,8 +69,22 @@ function setup(setupOptions = {}) {
       releaseLock: () => { lockHeld = false; }
     })
   };
-  delete require.cache[require.resolve('../../repositories/SheetRepositorySupport.gs')];
-  const lockSupport = require('../../repositories/SheetRepositorySupport.gs');
+  const lockSupport = requireGasFresh('../../repositories/SheetRepositorySupport.gs');
+  // OperationsNotifier.gs is a real GAS-global module -- it only needs the
+  // PropertiesService/TelegramClient globals above, no repository stack.
+  global.OperationsNotifier = requireGasFresh('../../admin/OperationsNotifier.gs');
+  // PaymentQrDispatch's real dispatchPaymentQr() builds its own OrderService
+  // from GAS-global repositories (BotOrderRepository(), SheetCustomerRepository(),
+  // ...) that read from Sheets -- unavailable here, and irrelevant to what
+  // this suite is testing (webhook.gs's own /thanhtoan interception and
+  // reply behavior, not PaymentQrDispatch's internals, which have their own
+  // dedicated unit tests in paymentQrDispatch.test.js). Reuse the real,
+  // pure `parseThanhToanCommand` but let each test control dispatch results.
+  global.PaymentQrDispatch = {
+    parseThanhToanCommand: RealPaymentQrDispatch.parseThanhToanCommand,
+    dispatchPaymentQr: setupOptions.dispatchPaymentQr || (() => ({ ok: false, reason: 'not_found' }))
+  };
+  const { TelegramWebhook } = requireGasFresh('../../adapters/telegram/webhook.gs');
 
   const orderRepository = {
     save(order) { orders.push(structuredClone(order)); return order; },
@@ -71,7 +97,12 @@ function setup(setupOptions = {}) {
     }
   };
   const customerRepository = {
-    save(customer) { customers.push(structuredClone(customer)); return customer; },
+    save(customer) {
+      const index = customers.findIndex((candidate) => candidate.customerId === customer.customerId);
+      if (index < 0) customers.push(structuredClone(customer));
+      else customers[index] = structuredClone(customer);
+      return customer;
+    },
     findById(customerId) { return customers.find((customer) => customer.customerId === customerId) || null; },
     findByPlatformUserId(platform, platformUserId) {
       return customers.find((customer) => customer.platformLinks.some(
@@ -79,6 +110,13 @@ function setup(setupOptions = {}) {
       )) || null;
     }
   };
+  // This suite tests order/QR/ops-notify flows, not the name+phone
+  // profile-collection gate (see orderService.test.js for that) -- seed an
+  // already-registered customer so the gate never intercepts chat 777.
+  customers.push({
+    customerId: 'seed-customer', phone: null, displayName: 'Test Customer',
+    platformLinks: [{ platform: 'telegram', platformUserId: '777' }]
+  });
   const conversationStateRepository = {
     get(customerId) { return states.has(customerId) ? structuredClone(states.get(customerId)) : null; },
     set(customerId, state) { states.set(customerId, structuredClone(state)); return state; }
@@ -137,7 +175,7 @@ function callback(updateId, id, data) {
   };
 }
 
-test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update id', () => {
+test('end-to-end catalog, two items, checkout, confirm, and duplicate update id', () => {
   const f = setup();
   const updates = [
     message(100, 'catalog'),
@@ -160,10 +198,17 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
   const apiCalls = f.fetchCalls.map((call) => ({
     method: call.url.slice(call.url.lastIndexOf('/') + 1), params: call.params
   }));
-  const photoCalls = apiCalls.filter((call) => call.method === 'sendPhoto');
-  assert.equal(photoCalls.length, 1, 'duplicate confirmation must not send another QR');
-  assert.match(photoCalls[0].params.photo, /^https:\/\/img\.vietqr\.io\/image\//);
-  assert.equal(photoCalls[0].params.chat_id, '777');
+  // The QR is no longer sent on confirm_order -- staff sends it later via
+  // /thanhtoan (see the sendPaymentQr tests below). Only a text confirmation
+  // goes out here.
+  assert.equal(apiCalls.filter((call) => call.method === 'sendPhoto').length, 0);
+  const confirmationText = apiCalls.find((call) =>
+    call.method === 'sendMessage' && /Đã tạo đơn #id-1/.test(call.params.text)
+  );
+  assert.ok(confirmationText, 'duplicate confirmation must not send a second confirmation text either');
+  assert.equal(apiCalls.filter((call) =>
+    call.method === 'sendMessage' && /Đã tạo đơn #id-1/.test(call.params.text)
+  ).length, 1);
   assert.equal(apiCalls.filter((call) => call.method === 'answerCallbackQuery').length, 4);
   assert.equal(apiCalls.filter((call) => call.method === 'editMessageReplyMarkup').length, 1);
   assert.equal(f.errors.length, 0);
@@ -181,18 +226,22 @@ test('end-to-end catalog, two items, checkout, confirm, QR, and duplicate update
   ));
 });
 
-test('failed QR delivery sends fallback, marks failed, and logs manual recovery data', () => {
+test('failed QR delivery (via resend_qr) sends fallback, marks failed, and logs manual recovery data', () => {
   const options = {};
   const f = setup(options);
   f.post(message(300, 'catalog'));
   f.post(callback(301, 'cb-add', 'add_item:p1:1'));
   f.post(message(302, 'checkout'));
-
-  options.failMethod = 'sendPhoto';
-  const response = f.post(callback(303, 'cb-confirm-failed', 'confirm_order'));
-  assert.equal(response.text, 'OK');
+  f.post(callback(303, 'cb-confirm', 'confirm_order'));
   assert.equal(f.orders.length, 1, 'business order is already committed');
-  assert.equal(f.processed.get('303'), 'failed');
+
+  // confirm_order itself no longer sends a QR -- exercise the same
+  // delivery-failure/recovery path through resend_qr (the "Xem lại QR"
+  // button on a pending order), which still sends an image.
+  options.failMethod = 'sendPhoto';
+  const response = f.post(callback(304, 'cb-resend-failed', 'resend_qr'));
+  assert.equal(response.text, 'OK');
+  assert.equal(f.processed.get('304'), 'failed');
 
   const apiCalls = f.fetchCalls.map((call) => ({
     method: call.url.slice(call.url.lastIndexOf('/') + 1), params: call.params
@@ -205,26 +254,26 @@ test('failed QR delivery sends fallback, marks failed, and logs manual recovery 
 
   const deliveryLog = f.errors.find((entry) => entry.context.stage === 'delivery');
   assert.ok(deliveryLog);
-  assert.equal(deliveryLog.context.orderId, 'id-2');
+  assert.equal(deliveryLog.context.orderId, 'id-1');
   assert.equal(deliveryLog.context.chatId, '777');
   assert.match(deliveryLog.context.qrUrl, /^https:\/\/img\.vietqr\.io\/image\//);
   assert.equal(deliveryLog.context.failedMethod, 'sendPhoto');
   assert.equal(deliveryLog.context.fallbackDelivered, true);
 
-  // Re-confirming cannot repeat the financial transition. It returns the
-  // existing pending-order guidance rather than a system-error fallback.
+  // Retrying once the transient failure clears succeeds.
   const fallbackCount = () => f.fetchCalls.filter((call) =>
     call.url.endsWith('/sendMessage') &&
     call.params.text === 'Processing failed. Please contact support.'
   ).length;
   const beforeRetry = fallbackCount();
-  const retryResponse = f.post(callback(304, 'cb-confirm-retry', 'confirm_order'));
+  options.failMethod = null;
+  const retryResponse = f.post(callback(305, 'cb-resend-retry', 'resend_qr'));
   assert.equal(retryResponse.text, 'OK');
   assert.equal(f.orders.length, 1);
-  assert.equal(f.processed.get('304'), 'delivered');
+  assert.equal(f.processed.get('305'), 'delivered');
   assert.equal(fallbackCount(), beforeRetry);
   assert.ok(f.fetchCalls.some((call) =>
-    call.url.endsWith('/sendMessage') && /chờ thanh toán/.test(call.params.text)
+    call.url.endsWith('/sendPhoto') && call.params.chat_id === '777'
   ));
 });
 
@@ -276,9 +325,11 @@ test('confirm_order notifies operations once while status and duplicates do not'
 
   const operations = f.fetchCalls.filter((call) => call.params.chat_id === 'ops-1');
   assert.equal(operations.length, 1);
-  assert.match(operations[0].params.text, /ĐƠN MỚI #id-2/);
+  assert.match(operations[0].params.text, /ĐƠN MỚI #id-1/);
+  assert.match(operations[0].params.text, /Coffee × 1/);
   assert.match(operations[0].params.text, /35\.000 đ/);
-  assert.match(operations[0].params.text, /Chờ thanh toán/);
+  assert.match(operations[0].params.text, /Đang chuẩn bị/);
+  assert.match(operations[0].params.text, /\/thanhtoan id-1/);
 });
 
 test('operations notification is optional and failure is isolated from customer delivery', () => {
@@ -299,4 +350,101 @@ test('operations notification is optional and failure is isolated from customer 
   assert.equal(response.text, 'OK');
   assert.equal(brokenOps.processed.get('523'), 'delivered');
   assert.ok(brokenOps.errors.some((entry) => entry.context.stage === 'operations_notify'));
+});
+
+function opsMessage(updateId, text, opsChatId, fromId) {
+  return {
+    update_id: updateId,
+    message: { message_id: updateId, chat: { id: opsChatId }, text, from: { id: fromId || 999 } }
+  };
+}
+
+test('/thanhtoan in the ops chat dispatches the QR and never reaches OrderService', () => {
+  let dispatched = null;
+  const f = setup({
+    opsChatId: 'ops-1',
+    dispatchPaymentQr: (orderId) => {
+      dispatched = orderId;
+      return { ok: true, dispatchResults: [{ platform: 'telegram', skipped: false }] };
+    }
+  });
+  const response = f.post(opsMessage(600, '/thanhtoan HD1', 'ops-1'));
+  assert.equal(response.text, 'OK');
+  assert.equal(dispatched, 'HD1');
+  assert.equal(f.getHandleCount(), 0, '/thanhtoan must not go through OrderService.handleMessage');
+  assert.equal(f.processed.get('600'), 'delivered');
+  const reply = f.fetchCalls.find((call) => call.params.chat_id === 'ops-1');
+  assert.match(reply.params.text, /Đã gửi QR thanh toán cho đơn HD1/);
+});
+
+test('/thanhtoan without an orderId replies with usage instead of silently failing', () => {
+  const f = setup({ opsChatId: 'ops-1' });
+  f.post(opsMessage(601, '/thanhtoan', 'ops-1'));
+  const reply = f.fetchCalls.find((call) => call.params.chat_id === 'ops-1');
+  assert.match(reply.params.text, /Cú pháp: \/thanhtoan/);
+  assert.equal(f.processed.get('601'), 'delivered');
+});
+
+test('/thanhtoan reports not_found and already_resolved distinctly', () => {
+  const notFound = setup({
+    opsChatId: 'ops-1',
+    dispatchPaymentQr: () => ({ ok: false, reason: 'not_found' })
+  });
+  notFound.post(opsMessage(602, '/thanhtoan HD-missing', 'ops-1'));
+  assert.match(
+    notFound.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /Không tìm thấy đơn HD-missing/
+  );
+
+  const resolved = setup({
+    opsChatId: 'ops-1',
+    dispatchPaymentQr: () => ({ ok: false, reason: 'already_resolved', status: 'PAID' })
+  });
+  resolved.post(opsMessage(603, '/thanhtoan HD-paid', 'ops-1'));
+  assert.match(
+    resolved.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /HD-paid không còn chờ thanh toán \(trạng thái: PAID\)/
+  );
+});
+
+test('/thanhtoan is rejected for a sender outside TELEGRAM_ADMIN_USER_IDS when it is configured', () => {
+  let dispatched = false;
+  const f = setup({
+    opsChatId: 'ops-1',
+    adminUserIds: '111,222',
+    dispatchPaymentQr: () => { dispatched = true; return { ok: true, dispatchResults: [] }; }
+  });
+  f.post(opsMessage(604, '/thanhtoan HD1', 'ops-1', 333));
+  assert.equal(dispatched, false);
+  assert.match(
+    f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /Bạn không có quyền/
+  );
+
+  const authorized = setup({
+    opsChatId: 'ops-1',
+    adminUserIds: '111,222',
+    dispatchPaymentQr: () => { dispatched = true; return { ok: true, dispatchResults: [] }; }
+  });
+  authorized.post(opsMessage(605, '/thanhtoan HD1', 'ops-1', 111));
+  assert.equal(dispatched, true);
+});
+
+test('/thanhtoan sent outside the configured ops chat falls through to the normal customer pipeline', () => {
+  const f = setup({ opsChatId: 'ops-1' });
+  const response = f.post(opsMessage(606, '/thanhtoan HD1', 777));
+  assert.equal(response.text, 'OK');
+  assert.equal(f.getHandleCount(), 1, 'a non-ops chat must be treated as a normal customer message');
+});
+
+test('duplicate /thanhtoan updates only dispatch once', () => {
+  let dispatchCount = 0;
+  const f = setup({
+    opsChatId: 'ops-1',
+    dispatchPaymentQr: () => { dispatchCount += 1; return { ok: true, dispatchResults: [] }; }
+  });
+  const update = opsMessage(607, '/thanhtoan HD1', 'ops-1');
+  f.post(update);
+  f.post(update);
+  assert.equal(dispatchCount, 1);
 });

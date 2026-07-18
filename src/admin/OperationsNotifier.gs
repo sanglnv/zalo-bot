@@ -1,0 +1,90 @@
+'use strict';
+
+/**
+ * Notifies staff in the Telegram ops chat whenever a customer confirms an
+ * order, regardless of whether that customer came in through Telegram or
+ * Zalo -- there is only one staff channel today (TELEGRAM_OPERATIONS_CHAT_ID),
+ * so both webhook adapters call into this same file.
+ *
+ * This is the GAS-side counterpart to the Telegram Fast Path's
+ * `operationsOrderText`/`/thanhtoan` flow (see telegram-gateway/src/index.ts).
+ * QR is intentionally NOT sent to the customer at order-confirm time anymore
+ * (see core/orderService.js's confirm_order handler); staff sends it manually
+ * once the order is ready by replying `/thanhtoan <orderId>` in this chat,
+ * which `PaymentQrDispatch.gs` handles.
+ */
+function operationsChatId() {
+  return PropertiesService.getScriptProperties().getProperty('TELEGRAM_OPERATIONS_CHAT_ID');
+}
+
+function formatVndForOps(amount) {
+  return String(Math.round(Number(amount) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' đ';
+}
+
+function operationsOrderText(order, sourcePlatform) {
+  var lines = (order.items || []).map(function (item) {
+    return '• ' + item.name + ' × ' + item.quantity + ' — ' + formatVndForOps(item.unitPrice * item.quantity);
+  });
+  return [
+    '🔔 ĐƠN MỚI #' + order.orderId,
+    'Kênh: ' + sourcePlatform,
+    order.customerName ? 'Khách: ' + order.customerName : null,
+    '',
+    lines.join('\n'),
+    '',
+    'Tổng: ' + formatVndForOps(order.totalAmount),
+    'Trạng thái: Đang chuẩn bị',
+    '',
+    'Khi món sẵn sàng, gõ: /thanhtoan ' + order.orderId
+  ].filter(function (line) { return line !== null; }).join('\n');
+}
+
+// Best-effort: a missing TELEGRAM_OPERATIONS_CHAT_ID or a failed Telegram
+// send must never fail the customer-facing order confirmation. Errors are
+// logged, not thrown.
+function notifyStaffOfNewOrder(order, sourcePlatform, errorLogRepository) {
+  var chatId = operationsChatId();
+  if (!chatId) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(JSON.stringify({
+        event: 'operations_notify_skipped', reason: 'not_configured', orderId: order.orderId
+      }));
+    }
+    return false;
+  }
+  try {
+    TelegramClient.create().execute({
+      method: 'sendMessage',
+      params: { chat_id: chatId, text: operationsOrderText(order, sourcePlatform) }
+    });
+    return true;
+  } catch (error) {
+    try {
+      (errorLogRepository || SheetErrorLogRepository()).log({
+        timestamp: new Date().toISOString(),
+        context: { stage: 'operations_notify', orderId: order.orderId, sourcePlatform: sourcePlatform },
+        message: error && error.message ? error.message : String(error),
+        stack: error && error.stack ? error.stack : ''
+      });
+    } catch (ignore) {}
+    return false;
+  }
+}
+
+function isAuthorizedOpsAdmin(userId) {
+  var raw = PropertiesService.getScriptProperties().getProperty('TELEGRAM_ADMIN_USER_IDS');
+  // Unconfigured means "anyone who can post in the ops chat is trusted" --
+  // the ops chat itself is the access boundary in that case.
+  if (!raw) return true;
+  return raw.split(',').map(function (id) { return id.trim(); }).filter(Boolean)
+    .indexOf(String(userId)) !== -1;
+}
+
+var OperationsNotifier = Object.freeze({
+  operationsChatId: operationsChatId,
+  operationsOrderText: operationsOrderText,
+  notifyStaffOfNewOrder: notifyStaffOfNewOrder,
+  isAuthorizedOpsAdmin: isAuthorizedOpsAdmin
+});
+
+if (typeof module !== 'undefined' && module.exports) module.exports = OperationsNotifier;

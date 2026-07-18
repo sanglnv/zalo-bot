@@ -75,6 +75,24 @@ var ZaloWebhook = (function () {
       }
     }
 
+    // Zalo has no ops channel of its own -- confirmations from Zalo
+    // customers are notified in the same Telegram ops chat as Telegram
+    // customers (see OperationsNotifier.gs). QR is deferred to staff's
+    // /thanhtoan reply there, same as the Telegram flow.
+    function confirmedOrderSummary(outbound, inbound) {
+      if (!inbound || !inbound.payload || inbound.payload.action !== 'confirm_order') return null;
+      var confirmation = outbound.find(function (message) {
+        return message.type === 'text' && message.content && message.content.orderId != null;
+      });
+      if (!confirmation) return null;
+      return {
+        orderId: String(confirmation.content.orderId),
+        amount: Number(confirmation.content.amount || 0),
+        items: Array.isArray(confirmation.content.items) ? confirmation.content.items : [],
+        customerName: confirmation.content.customerName || ''
+      };
+    }
+
     function doPost(event) {
       var rawBody = event && event.postData && event.postData.contents;
       var parsed = null;
@@ -108,6 +126,7 @@ var ZaloWebhook = (function () {
             commands: outbound.map(function (message) {
               return dependencies.renderOutboundMessage(message, inbound.platformUserId);
             }),
+            confirmedOrderSummary: confirmedOrderSummary(outbound, inbound),
             recovery: outbound.reduce(function (result, message) {
               if (message.type === 'image' && message.content && message.content.purpose === 'payment_qr') {
                 result.orderId = message.content.orderId || null;
@@ -117,6 +136,14 @@ var ZaloWebhook = (function () {
             }, { platformUserId: inbound.platformUserId })
           };
         });
+        if (!transaction.duplicate && transaction.confirmedOrderSummary) {
+          OperationsNotifier.notifyStaffOfNewOrder({
+            orderId: transaction.confirmedOrderSummary.orderId,
+            totalAmount: transaction.confirmedOrderSummary.amount,
+            items: transaction.confirmedOrderSummary.items,
+            customerName: transaction.confirmedOrderSummary.customerName
+          }, 'zalo', dependencies.errorLogRepository);
+        }
         if (transaction.duplicate) return successResponse();
         for (var index = 0; index < transaction.commands.length; index += 1) {
           try {
@@ -180,7 +207,7 @@ function zaloSha256Hex(value) {
 function createDefaultZaloWebhook() {
   var tokenManager = ZaloTokenManager.createDefault();
   var orderService = OrderService.create({
-    orderRepository: SheetOrderRepository(),
+    orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
     getCatalog: ZaloRuntime.loadCatalog,

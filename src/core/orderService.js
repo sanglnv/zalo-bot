@@ -55,6 +55,11 @@ UserActionError.prototype.constructor = UserActionError;
  * @param {Object} dependencies.orderRepository
  * @param {Object} dependencies.customerRepository
  * @param {Object} dependencies.conversationStateRepository
+ * @param {{resolve: function({name: string, phone: string}): ({memberId: string}|null)}=} dependencies.memberRepository
+ *   Optional. Resolves a POS member for a customer's collected name+phone
+ *   (see the profile-collection step in handleMessageTransaction). When
+ *   absent, name/phone are still collected and stored locally, just never
+ *   linked to a POS member/loyalty record.
  * @param {function(): import('./domain').Product[]} dependencies.getCatalog
  * @param {function(Object): string} dependencies.createQrContent
  * @param {function(): string} dependencies.createId
@@ -149,6 +154,98 @@ function createOrderService(dependencies) {
     return new UserActionError(code, message, action, state && state.currentState);
   }
 
+  var PROFILE_STEP_NAME = 'awaiting_name';
+  var PROFILE_STEP_PHONE = 'awaiting_phone';
+
+  function setProfileStep(state, step) {
+    return persistState(Object.assign({}, state, {
+      contextData: Object.assign({}, state.contextData, { profileStep: step }),
+      updatedAt: dependencies.now().toISOString()
+    }));
+  }
+
+  function askNameResponse() {
+    return [outbound('text', { text: 'Xin chào! Trước khi bắt đầu, cho mình xin tên của bạn nhé:' })];
+  }
+
+  function askPhoneResponse(name) {
+    return [outbound('text', {
+      text: 'Cảm ơn ' + name + '! Cho mình xin số điện thoại để tích điểm thành viên nhé ' +
+        '(gõ "bỏ qua" nếu chưa muốn cung cấp):'
+    })];
+  }
+
+  function welcomeAfterProfileResponse() {
+    return [
+      outbound('text', { text: 'Đã lưu thông tin. Cảm ơn bạn!' }),
+      outbound('button', {
+        text: 'Bạn muốn đặt món hay kiểm tra đơn hàng?',
+        buttons: [
+          { action: 'catalog', label: 'Xem catalog' },
+          { action: 'status', label: 'Trạng thái đơn' },
+          { action: 'help', label: 'Trợ giúp' }
+        ]
+      })
+    ];
+  }
+
+  // Runs before any order/cart action for a customer with no name on file
+  // yet (retroactively covers customers created before this feature too --
+  // there is no other signal for "never asked"). Free-text replies are
+  // consumed as the answer; button taps re-prompt instead of being
+  // interpreted as a command, since the customer hasn't been asked yet.
+  //
+  // Phone -> POS member resolution is best-effort and never blocks ordering:
+  // `dependencies.memberRepository` is optional (only PaymentQrDispatch's/
+  // the live webhooks' OrderService instances wire it up today), and any
+  // resolve() failure is swallowed -- a POS outage must not stop a customer
+  // from placing an order over a missing member record.
+  function profileGateResponse(state, customer, message) {
+    var step = state.contextData && state.contextData.profileStep;
+    // Once a name is on file AND there's no pending step, the gate is fully
+    // done. While `step` is still 'awaiting_phone', the gate must stay
+    // active even though displayName was already saved on the previous
+    // message -- checking `!customer.displayName` alone here would skip the
+    // phone step entirely the moment the name is saved.
+    if (customer.displayName && !step) return null;
+    var rawText = typeof message.text === 'string' ? message.text.trim() : '';
+    var isFreeText = !message.payload && rawText !== '';
+
+    if (step === PROFILE_STEP_NAME) {
+      if (!isFreeText) return askNameResponse();
+      var name = rawText.slice(0, 80);
+      customer.displayName = name;
+      dependencies.customerRepository.save(customer);
+      setProfileStep(state, PROFILE_STEP_PHONE);
+      return askPhoneResponse(name);
+    }
+
+    if (step === PROFILE_STEP_PHONE) {
+      if (!isFreeText) return askPhoneResponse(customer.displayName);
+      var skip = /^(bỏ qua|bo qua|skip)$/i.test(rawText);
+      if (!skip) {
+        var phone = rawText.replace(/[^0-9+]/g, '').slice(0, 20);
+        if (phone) {
+          customer.phone = phone;
+          if (dependencies.memberRepository && typeof dependencies.memberRepository.resolve === 'function') {
+            try {
+              var member = dependencies.memberRepository.resolve({ name: customer.displayName, phone: phone });
+              if (member && member.memberId) customer.memberId = member.memberId;
+            } catch (ignore) {
+              // Best-effort: POS member linking must never block ordering.
+            }
+          }
+        }
+      }
+      dependencies.customerRepository.save(customer);
+      setProfileStep(state, null);
+      return welcomeAfterProfileResponse();
+    }
+
+    setProfileStep(state, PROFILE_STEP_NAME);
+    return askNameResponse();
+  }
+
   function formatMoney(amount) {
     return String(Math.round(Number(amount) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' ₫';
   }
@@ -201,9 +298,16 @@ function createOrderService(dependencies) {
 
   function helpResponse() {
     return [outbound('button', {
-      text: 'Bạn có thể chọn Catalog, xem giỏ hàng, thanh toán hoặc kiểm tra đơn hàng.',
+      text: 'Các lệnh đặt món:\n' +
+        '/danhmuc — xem món đang bán\n' +
+        '/giohang — xem giỏ hàng\n' +
+        '/dathang — kiểm tra và xác nhận giỏ\n' +
+        '/xemdon — xem trạng thái đơn\n' +
+        '/huydon — hủy giỏ hoặc đơn hiện tại\n' +
+        '/thanhtoan — nhận lại mã QR\n' +
+        '/trogiup — xem hướng dẫn này',
       buttons: [
-        { action: 'catalog', label: 'Catalog' },
+        { action: 'catalog', label: 'Danh mục' },
         { action: 'cart', label: 'Giỏ hàng' },
         { action: 'status', label: 'Trạng thái' }
       ]
@@ -238,7 +342,7 @@ function createOrderService(dependencies) {
       ]
     });
     var hasCategories = products.some(function (product) { return !!product.categoryId; });
-    if (!hasCategories) return outbound('list', { title: 'Catalog', items: products });
+    if (!hasCategories) return outbound('list', { title: 'Danh mục món', items: products });
     return outbound('button', {
       text: 'Chọn danh mục sản phẩm:',
       buttons: catalogCategories(products).map(function (category) {
@@ -255,7 +359,18 @@ function createOrderService(dependencies) {
     if (message.payload && typeof message.payload.action === 'string') return message.payload.action;
     var action = message.text.trim().toLowerCase().split(/\s+/)[0] || '';
     if (action.charAt(0) === '/') action = action.slice(1).split('@')[0];
-    return action;
+    var vietnameseCommands = {
+      batdau: 'start',
+      danhmuc: 'catalog',
+      thucdon: 'catalog',
+      giohang: 'cart',
+      dathang: 'checkout',
+      xemdon: 'status',
+      donhang: 'status',
+      huydon: 'cancel',
+      trogiup: 'help'
+    };
+    return vietnameseCommands[action] || action;
   }
 
   /** @param {import('./domain').InboundMessage} message */
@@ -268,6 +383,8 @@ function createOrderService(dependencies) {
       customerId: customer.customerId,
       currentState: state.currentState
     });
+    var profileGate = profileGateResponse(state, customer, message);
+    if (profileGate) return profileGate;
     var action = actionOf(message);
 
     if (action === 'start' || action === 'help') {
@@ -277,7 +394,7 @@ function createOrderService(dependencies) {
       return [outbound('button', {
         text: 'Xin chào! Bạn muốn đặt món hay kiểm tra đơn hàng?',
         buttons: [
-          { action: 'catalog', label: 'Xem catalog' },
+          { action: 'catalog', label: 'Xem danh mục' },
           { action: 'status', label: 'Trạng thái đơn' },
           { action: 'help', label: 'Trợ giúp' }
         ]
@@ -331,7 +448,7 @@ function createOrderService(dependencies) {
       if (state.currentState !== d.StateMachine.States.BROWSING &&
           state.currentState !== d.StateMachine.States.CART &&
           state.currentState !== d.StateMachine.States.CONFIRMING) {
-        throw userError('INVALID_FLOW', 'Hãy mở catalog trước khi chọn sản phẩm.', action, state);
+        throw userError('INVALID_FLOW', 'Hãy mở danh mục trước khi chọn sản phẩm.', action, state);
       }
       return [outbound('button', {
         text: viewedProduct.name + '\n' + formatMoney(viewedProduct.price) +
@@ -380,7 +497,7 @@ function createOrderService(dependencies) {
           state.currentState !== d.StateMachine.States.CONFIRMING) {
         var activeForAdd = pendingOrder(state, customer);
         if (activeForAdd) return pendingOrderResponse(activeForAdd);
-        throw userError('INVALID_FLOW', 'Hãy mở catalog trước khi chọn sản phẩm.', action, state);
+        throw userError('INVALID_FLOW', 'Hãy mở danh mục trước khi chọn sản phẩm.', action, state);
       }
       var cart = (state.contextData.cart || []).map(function (item) { return Object.assign({}, item); });
       var existing = cart.find(function (item) { return item.productId === product.productId; });
@@ -449,7 +566,7 @@ function createOrderService(dependencies) {
           { action: 'checkout', label: 'Thanh toán' },
           { action: 'catalog', label: 'Chọn thêm' },
           { action: 'cancel', label: 'Hủy giỏ' }
-        ] : [{ action: 'catalog', label: 'Xem catalog' }]
+        ] : [{ action: 'catalog', label: 'Xem danh mục' }]
       })];
     }
 
@@ -467,7 +584,7 @@ function createOrderService(dependencies) {
       if (state.currentState !== d.StateMachine.States.CART) {
         var activeForCheckout = pendingOrder(state, customer);
         if (activeForCheckout) return pendingOrderResponse(activeForCheckout);
-        throw userError('INVALID_FLOW', 'Hãy xem catalog và chọn sản phẩm trước.', action, state);
+        throw userError('INVALID_FLOW', 'Hãy xem danh mục và chọn sản phẩm trước.', action, state);
       }
       var preview = d.Billing.calculateBill(checkoutCart, state.contextData.discount || null);
       state = persistTransition(state, d.StateMachine.Events.REVIEW_CART, { bill: preview });
@@ -492,6 +609,7 @@ function createOrderService(dependencies) {
       var order = {
         orderId: dependencies.createId(),
         customerId: customer.customerId,
+        memberId: customer.memberId || null,
         items: (state.contextData.cart || []).map(function (item) { return Object.assign({}, item); }),
         status: 'AWAITING_PAYMENT',
         totalAmount: bill.totalAmount,
@@ -504,16 +622,26 @@ function createOrderService(dependencies) {
         orderId: order.orderId, bill: bill
       });
       state = persistState(preparedState);
-      var qrContent = dependencies.createQrContent(order);
+      // Unlike the old flow, the QR is NOT sent here. Staff sends it manually
+      // once the order is being prepared (mirrors the low-latency fast-path
+      // flow, where a staff command triggers the QR send instead of it
+      // firing the instant the customer confirms). `items` travels on the
+      // text message
+      // purely as data for the adapter layer to build an ops-chat
+      // notification -- core stays platform-neutral and does not itself know
+      // about any ops chat. See OrderService.create's `sendPaymentQr` for the
+      // staff-triggered counterpart to this.
       return [
         outbound('text', {
-          text: 'Đã tạo đơn #' + order.orderId + '. Vui lòng thanh toán ' + formatMoney(order.totalAmount) + '.',
+          text: 'Đã tạo đơn #' + order.orderId + '. Đơn đang được chuẩn bị, ' +
+            'nhân viên sẽ gửi mã QR thanh toán ngay khi món sẵn sàng.',
           orderId: order.orderId,
-          amount: order.totalAmount
-        }),
-        outbound('image', {
-          purpose: 'payment_qr', data: qrContent, orderId: order.orderId,
-          caption: 'Đơn #' + order.orderId + '\nSố tiền: ' + formatMoney(order.totalAmount)
+          amount: order.totalAmount,
+          items: order.items,
+          // Travels purely as data for the adapter layer's ops-chat
+          // notification, same rationale as `items` above -- core stays
+          // platform-neutral and does not itself know about any ops chat.
+          customerName: customer.displayName || ''
         })
       ];
     }
@@ -523,7 +651,7 @@ function createOrderService(dependencies) {
       if (!orderForStatus) {
         return [outbound('button', {
           text: 'Bạn chưa có đơn hàng nào.',
-          buttons: [{ action: 'catalog', label: 'Xem catalog' }]
+          buttons: [{ action: 'catalog', label: 'Xem danh mục' }]
         })];
       }
       if (orderForStatus.status === 'AWAITING_PAYMENT') return pendingOrderResponse(orderForStatus);
@@ -621,7 +749,7 @@ function createOrderService(dependencies) {
       return {
         customer: customer,
         outboundMessages: [outbound('text', {
-          text: 'Payment confirmed for order ' + orderId + '. Thank you!',
+          text: 'Đã xác nhận thanh toán cho đơn #' + orderId + '. Cảm ơn bạn!',
           orderId: orderId
         })]
       };
@@ -666,10 +794,39 @@ function createOrderService(dependencies) {
     });
   }
 
+  function sendPaymentQr(orderId) {
+    return dependencies.withLock(function () {
+      if (typeof orderId !== 'string' || orderId.trim() === '') {
+        throw new TypeError('orderId must be a non-empty string');
+      }
+      var awaiting = requireAwaitingPayment(orderId);
+      var order = awaiting.order;
+      var customer = dependencies.customerRepository.findById(order.customerId);
+      if (!customer) throw new Error('Customer not found for order: ' + orderId);
+      var qrContent = dependencies.createQrContent(order);
+      return {
+        customer: customer,
+        outboundMessages: [
+          outbound('text', {
+            text: 'Đơn #' + order.orderId + ' đã sẵn sàng. Vui lòng thanh toán ' +
+              formatMoney(order.totalAmount) + '.',
+            orderId: order.orderId,
+            amount: order.totalAmount
+          }),
+          outbound('image', {
+            purpose: 'payment_qr', data: qrContent, orderId: order.orderId,
+            caption: 'Đơn #' + order.orderId + '\nSố tiền: ' + formatMoney(order.totalAmount)
+          })
+        ]
+      };
+    });
+  }
+
   return Object.freeze({
     handleMessage: handleMessage,
     confirmPayment: confirmPayment,
-    expireOrder: expireOrder
+    expireOrder: expireOrder,
+    sendPaymentQr: sendPaymentQr
   });
 }
 

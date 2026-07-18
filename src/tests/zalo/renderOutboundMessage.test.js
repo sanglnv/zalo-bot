@@ -31,3 +31,40 @@ test('renders text, list, buttons, and URL image for the v3 customer-service API
     { media_type: 'image', url: 'https://img.vietqr.io/test.png' }
   ]);
 });
+
+test('category selection buttons carry categoryId through the query payload', () => {
+  const buttons = renderOutboundMessage({
+    type: 'button', content: { text: 'Chọn danh mục:', buttons: [
+      { action: 'select_category', categoryId: 'CAT1', label: 'Đồ uống' },
+      { action: 'cart', label: 'Giỏ hàng' }
+    ] }
+  }, 'u1');
+  assert.deepEqual(buttons.params.message.attachment.payload.buttons.map((b) => b.payload), [
+    'zc:select_category:CAT1', 'zc:cart'
+  ]);
+});
+
+test('more than 5 buttons (e.g. >4 categories + cart) degrades to a list instead of throwing', () => {
+  const manyCategoryButtons = [
+    { action: 'select_category', categoryId: 'CAT1', label: 'Cà phê' },
+    { action: 'select_category', categoryId: 'CAT2', label: 'Trà' },
+    { action: 'select_category', categoryId: 'CAT3', label: 'Bánh' },
+    { action: 'select_category', categoryId: 'CAT4', label: 'Nước ép' },
+    { action: 'select_category', categoryId: 'CAT5', label: 'Đá xay' },
+    { action: 'cart', label: 'Giỏ hàng' }
+  ];
+  const result = renderOutboundMessage({
+    type: 'button', content: { text: 'Chọn danh mục:', buttons: manyCategoryButtons }
+  }, 'u1');
+  assert.equal(result.params.message.attachment.payload.template_type, 'list');
+  assert.equal(result.params.message.attachment.payload.elements.length, 6);
+  assert.equal(result.params.message.attachment.payload.elements[0].title, 'Cà phê');
+  assert.equal(
+    result.params.message.attachment.payload.elements[0].default_action.payload,
+    'zc:select_category:CAT1'
+  );
+  assert.equal(
+    result.params.message.attachment.payload.elements[5].default_action.payload,
+    'zc:cart'
+  );
+});

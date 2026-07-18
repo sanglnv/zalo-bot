@@ -7,7 +7,8 @@ function renderZbsTemplateMessage(message, userId, templateIds) {
   }
   templateIds = templateIds || {};
   var expired = message.content.text.indexOf('đã hết hạn') >= 0;
-  var paid = message.content.text.indexOf('Payment confirmed') === 0;
+  var paid = message.content.text.indexOf('Đã xác nhận thanh toán') === 0 ||
+    message.content.text.indexOf('Payment confirmed') === 0;
   if (!expired && !paid) throw new Error('No ZBS template mapping for notification');
   var templateId = expired ? templateIds.expired : templateIds.paymentConfirmed;
   if (!templateId) throw new Error('Missing ZBS template id for ' + (expired ? 'expiry' : 'payment confirmation'));

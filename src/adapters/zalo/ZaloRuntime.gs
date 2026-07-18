@@ -8,9 +8,7 @@ var ZaloRuntime = (function () {
     return value;
   }
   function loadCatalog() {
-    var products = JSON.parse(requiredProperty('CATALOG_JSON'));
-    if (!Array.isArray(products)) throw new TypeError('CATALOG_JSON must contain an array');
-    return products;
+    return BotOrderWebhookClient.fetchMenuCatalog();
   }
   function createPaymentQrUrl(order) {
     var template = properties().getProperty('VIETQR_TEMPLATE') || 'compact2';

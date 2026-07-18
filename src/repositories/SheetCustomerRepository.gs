@@ -2,11 +2,12 @@
 
 function SheetCustomerRepository() {
   var SHEET = 'Customers';
-  var HEADERS = ['customerId', 'phone', 'displayName', 'platformLinksJson'];
+  var HEADERS = ['customerId', 'phone', 'displayName', 'platformLinksJson', 'memberId'];
 
   function fromRow(row) {
     return { customerId: String(row[0]), phone: row[1] ? String(row[1]) : null,
-      displayName: String(row[2] || ''), platformLinks: JSON.parse(row[3] || '[]') };
+      displayName: String(row[2] || ''), platformLinks: JSON.parse(row[3] || '[]'),
+      memberId: row[4] ? String(row[4]) : null };
   }
 
   function save(customer) {
@@ -15,7 +16,7 @@ function SheetCustomerRepository() {
       var all = SheetRepositorySupport.rows(sheet);
       var index = all.findIndex(function (row) { return String(row[0]) === customer.customerId; });
       var values = [[customer.customerId, customer.phone || '', customer.displayName || '',
-        JSON.stringify(customer.platformLinks || [])]];
+        JSON.stringify(customer.platformLinks || []), customer.memberId || '']];
       if (index < 0) sheet.appendRow(values[0]);
       else sheet.getRange(index + 2, 1, 1, HEADERS.length).setValues(values);
       return customer;

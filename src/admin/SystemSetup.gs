@@ -4,18 +4,30 @@ var SystemSetup = (function () {
   var REQUIRED_PROPERTIES = [
     'SPREADSHEET_ID',
     'TELEGRAM_BOT_TOKEN',
-    'CATALOG_JSON',
+    'BOT_ORDER_WEBHOOK_URL',
+    'BOT_ORDER_WEBHOOK_SECRET',
     'VIETQR_BANK_ID',
     'VIETQR_ACCOUNT_NO',
     'VIETQR_ACCOUNT_NAME',
     'WEB_APP_URL',
     'TELEGRAM_WEBHOOK_URL',
     'TELEGRAM_WEBHOOK_SECRET',
-    'GAS_GATEWAY_TOKEN'
+    'GAS_GATEWAY_TOKEN',
+    // QR is no longer sent to the customer at confirm_order time -- staff
+    // sends it manually via "/thanhtoan <orderId>" in this chat (see
+    // OperationsNotifier.gs/PaymentQrDispatch.gs). Without this, confirmed
+    // orders are silently never notified to anyone and customers never
+    // receive a QR at all, for EITHER Telegram or Zalo customers (Zalo has
+    // no ops chat of its own and reuses this one). This is required, not
+    // optional, unlike before.
+    'TELEGRAM_OPERATIONS_CHAT_ID'
   ];
+  // 'Orders' is intentionally not managed here anymore: orders are created,
+  // read, completed, and cancelled through the POS Bot Order Webhook
+  // (BotOrderRepository), not Sheets. SheetOrderRepository.gs still exists
+  // and is still tested, but nothing wires it into the live app.
   var SHEETS = [
-    ['Orders', ['orderId', 'customerId', 'itemsJson', 'status', 'totalAmount', 'createdAt', 'updatedAt', 'confirmedAt', 'confirmedBy']],
-    ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson']],
+    ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson', 'memberId']],
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],
     ['ProcessedUpdates', ['updateId', 'processedAt', 'deliveryStatus']],
     ['FastPathSyncedUpdates', ['updateId', 'syncedAt']],
@@ -29,17 +41,16 @@ var SystemSetup = (function () {
     var properties = PropertiesService.getScriptProperties();
     var missing = REQUIRED_PROPERTIES.filter(function (name) { return !properties.getProperty(name); });
     if (missing.length) throw new Error('Missing required script properties: ' + missing.join(', '));
-    var catalog;
-    try { catalog = JSON.parse(properties.getProperty('CATALOG_JSON')); }
-    catch (error) { throw new Error('CATALOG_JSON must be valid JSON: ' + error.message); }
-    if (!Array.isArray(catalog)) throw new Error('CATALOG_JSON must contain an array');
-    catalog.forEach(function (product, index) {
-      if (!product || typeof product.productId !== 'string' || typeof product.name !== 'string' ||
-          typeof product.price !== 'number' || typeof product.isAvailable !== 'boolean') {
-        throw new Error('CATALOG_JSON product at index ' + index + ' is invalid');
-      }
-    });
-    return { properties: 'ok', catalogProducts: catalog.length };
+    return { properties: 'ok' };
+  }
+
+  function checkBotOrderWebhook() {
+    try {
+      var products = BotOrderWebhookClient.fetchMenuCatalog();
+      return { status: 'ok', catalogProducts: products.length };
+    } catch (error) {
+      return { status: 'error', message: error && error.message ? error.message : String(error) };
+    }
   }
 
   function ensureSheets() {
@@ -56,6 +67,9 @@ var SystemSetup = (function () {
   function setupProject(options) {
     options = options || {};
     var configuration = validateConfiguration();
+    var menuSource = checkBotOrderWebhook();
+    if (menuSource.status !== 'ok') throw new Error('Bot order webhook is not reachable: ' + menuSource.message);
+    configuration = { properties: configuration.properties, catalogProducts: menuSource.catalogProducts };
     var sheets = ensureSheets();
     var webhook = options.registerWebhook === false ? null : registerWebhook(options.dropPendingUpdates === true);
     return { configuration: configuration, sheets: sheets, webhook: webhook };
@@ -85,11 +99,13 @@ var SystemSetup = (function () {
         expectedUrl: expectedWebhookUrl || ''
       } : { status: 'error', message: 'Unexpected Telegram response' };
     } catch (error) { webhook = { status: 'error', message: error.message }; }
-    return { configuration: configuration, sheets: sheets, telegramWebhook: webhook };
+    var menuSource = checkBotOrderWebhook();
+    return { configuration: configuration, sheets: sheets, telegramWebhook: webhook, menuSource: menuSource };
   }
 
   return Object.freeze({
     validateConfiguration: validateConfiguration,
+    checkBotOrderWebhook: checkBotOrderWebhook,
     ensureSheets: ensureSheets,
     setupProject: setupProject,
     healthCheck: healthCheck

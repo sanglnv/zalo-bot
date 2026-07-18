@@ -40,16 +40,49 @@ test('registerWebhook requires and registers the Cloudflare gateway', () => {
   const result = telegramWebhookModule.registerWebhook(false);
 
   assert.deepEqual(result, { ok: true });
-  assert.deepEqual(calls, [{
-    method: 'setWebhook',
-    params: {
-      url: 'https://telegram-gateway.example.workers.dev',
-      allowed_updates: ['message', 'callback_query'],
-      max_connections: 1,
-      drop_pending_updates: false,
-      secret_token: 'telegram-secret'
+  assert.deepEqual(calls, [
+    {
+      method: 'setWebhook',
+      params: {
+        url: 'https://telegram-gateway.example.workers.dev',
+        allowed_updates: ['message', 'callback_query'],
+        max_connections: 1,
+        drop_pending_updates: false,
+        secret_token: 'telegram-secret'
+      }
+    },
+    {
+      method: 'setMyCommands',
+      params: {
+        commands: [
+          { command: 'batdau', description: 'Bắt đầu đặt món' },
+          { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+          { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
+          { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
+          { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },
+          { command: 'huydon', description: 'Hủy giỏ hoặc đơn hiện tại' },
+          { command: 'thanhtoan', description: 'Nhận mã QR thanh toán' },
+          { command: 'trogiup', description: 'Xem hướng dẫn sử dụng bot' }
+        ]
+      }
+    },
+    {
+      method: 'setMyCommands',
+      params: {
+        commands: [
+          { command: 'batdau', description: 'Bắt đầu đặt món' },
+          { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+          { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
+          { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
+          { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },
+          { command: 'huydon', description: 'Hủy giỏ hoặc đơn hiện tại' },
+          { command: 'thanhtoan', description: 'Nhận mã QR thanh toán' },
+          { command: 'trogiup', description: 'Xem hướng dẫn sử dụng bot' }
+        ],
+        language_code: 'vi'
+      }
     }
-  }]);
+  ]);
 });
 
 test('registerWebhook refuses a direct GAS webhook or missing secret', () => {

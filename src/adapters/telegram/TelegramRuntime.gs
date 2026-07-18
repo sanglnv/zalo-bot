@@ -12,10 +12,7 @@ var TelegramRuntime = (function () {
   }
 
   function loadCatalog() {
-    var raw = requiredProperty('CATALOG_JSON');
-    var products = JSON.parse(raw);
-    if (!Array.isArray(products)) throw new TypeError('CATALOG_JSON must contain an array');
-    return products;
+    return BotOrderWebhookClient.fetchMenuCatalog();
   }
 
   function createPaymentQrUrl(order) {

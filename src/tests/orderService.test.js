@@ -26,7 +26,12 @@ function fixture(options = {}) {
     }
   };
   const customerRepository = {
-    save(customer) { customers.push(structuredClone(customer)); return customer; },
+    save(customer) {
+      const index = customers.findIndex((candidate) => candidate.customerId === customer.customerId);
+      if (index < 0) customers.push(structuredClone(customer));
+      else customers[index] = structuredClone(customer);
+      return customer;
+    },
     findById(customerId) { return customers.find((customer) => customer.customerId === customerId) || null; },
     findByPlatformUserId(platform, platformUserId) {
       return customers.find((customer) => customer.platformLinks.some(
@@ -42,6 +47,7 @@ function fixture(options = {}) {
     orderRepository,
     customerRepository,
     conversationStateRepository,
+    memberRepository: options.memberRepository,
     getCatalog: () => options.catalog || [
       { productId: 'p1', name: 'House coffee', price: 35_000, isAvailable: true },
       { productId: 'p2', name: 'Green tea', price: 20_000, isAvailable: true },
@@ -55,6 +61,17 @@ function fixture(options = {}) {
   const send = (text, payload = null) => service.handleMessage({
     platform: 'test-channel', platformUserId: 'user-1', text, payload
   });
+  if (options.skipProfileWarmup !== true) {
+    // Every fixture starts as an already-registered customer by default --
+    // the name+phone profile-collection gate is exercised by its own
+    // dedicated tests, not smuggled into every unrelated cart/order test.
+    // This warm-up still goes through handleMessage/createId() exactly like
+    // a real first contact, so createId() sequencing for the customer (id-1)
+    // is unaffected -- tests below assume orderId starts at id-2.
+    send('/start');
+    send('Test Customer');
+    send('bỏ qua');
+  }
   return { service, send, customers, orders, states };
 }
 
@@ -73,8 +90,12 @@ test('catalog, cart, checkout, confirmation, and payment QR flow', () => {
   assert.equal(checkout[0].content.summary.totalAmount, 70_000);
 
   const confirmed = f.send('', { action: 'confirm_order' });
-  assert.deepEqual(confirmed.map((message) => message.type), ['text', 'image']);
-  assert.equal(confirmed[1].content.data, 'qr:id-2:70000');
+  // The QR is no longer sent immediately -- staff triggers it later via
+  // OrderService.sendPaymentQr (mirrors the Telegram Fast Path's /thanhtoan
+  // flow). confirm_order only returns a text confirmation, but it carries
+  // `items` so the adapter layer can build an ops-chat notification.
+  assert.deepEqual(confirmed.map((message) => message.type), ['text']);
+  assert.deepEqual(confirmed[0].content.items.map((item) => item.productId), ['p1']);
   assert.equal(f.orders.length, 1);
   assert.equal(f.orders[0].status, 'AWAITING_PAYMENT');
   assert.equal([...f.states.values()][0].currentState, 'AWAITING_PAYMENT');
@@ -258,10 +279,20 @@ test('awaiting-payment actions return status and QR instead of transition errors
 
 test('start, help, unknown commands, cart, and status always return useful guidance', () => {
   const f = fixture();
-  assert.match(f.send('/start')[0].content.text, /Xin chào/);
-  assert.match(f.send('something-unknown')[0].content.text, /Catalog/);
-  assert.match(f.send('/cart')[0].content.text, /trống/);
-  assert.match(f.send('/status')[0].content.text, /chưa có đơn/);
+  assert.match(f.send('/batdau')[0].content.text, /Xin chào/);
+  assert.match(f.send('something-unknown')[0].content.text, /\/danhmuc/);
+  assert.match(f.send('/giohang')[0].content.text, /trống/);
+  assert.match(f.send('/xemdon')[0].content.text, /chưa có đơn/);
+});
+
+test('Vietnamese customer commands cover the complete ordering flow', () => {
+  const f = fixture();
+  assert.equal(f.send('/danhmuc')[0].type, 'list');
+  f.send('', { action: 'add_item', productId: 'p1' });
+  assert.match(f.send('/giohang')[0].content.text, /House coffee/);
+  assert.match(f.send('/dathang')[0].content.text, /xác nhận/i);
+  assert.match(f.send('/huydon')[0].content.text, /Đã hủy/);
+  assert.match(f.send('/trogiup')[0].content.text, /\/thanhtoan/);
 });
 
 test('payment confirmation trusts order status even if UI state was independently reset', () => {
@@ -275,6 +306,124 @@ test('payment confirmation trusts order status even if UI state was independentl
   f.service.confirmPayment(orderId, 'staff@example.com');
   assert.equal(f.orders[0].status, 'PAID');
   assert.equal(f.states.get(customerId).currentState, 'BROWSING');
+});
+
+test('a brand-new customer is asked for a name before any command is processed', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  const response = f.send('catalog');
+  assert.match(response[0].content.text, /tên của bạn/);
+  assert.equal(f.customers.length, 1);
+  assert.equal(f.customers[0].displayName, '', 'the gate only asked -- it must not treat "catalog" itself as the name');
+  assert.equal([...f.states.values()][0].currentState, 'IDLE', 'the gate never touches the cart/order state machine');
+  assert.equal([...f.states.values()][0].contextData.profileStep, 'awaiting_name');
+});
+
+test('providing a name saves it and asks for a phone number next', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  f.send('/start');
+  const response = f.send('Sang');
+  assert.equal(f.customers[0].displayName, 'Sang');
+  assert.match(response[0].content.text, /Cảm ơn Sang/);
+  assert.match(response[0].content.text, /số điện thoại/);
+  assert.equal([...f.states.values()][0].contextData.profileStep, 'awaiting_phone');
+});
+
+test('a button tap during name/phone collection re-prompts instead of being treated as a command', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  f.send('/start');
+  const duringName = f.send('', { action: 'catalog' });
+  assert.match(duringName[0].content.text, /tên của bạn/);
+  f.send('Sang');
+  const duringPhone = f.send('', { action: 'catalog' });
+  assert.match(duringPhone[0].content.text, /số điện thoại/);
+});
+
+test('providing a phone resolves a POS member and clears the gate, then shows the normal menu', () => {
+  const resolveCalls = [];
+  const f = fixture({
+    skipProfileWarmup: true,
+    memberRepository: {
+      resolve(profile) { resolveCalls.push(profile); return { memberId: 'M1' }; }
+    }
+  });
+  f.send('/start');
+  f.send('Sang');
+  const response = f.send('0901234567');
+  assert.deepEqual(resolveCalls, [{ name: 'Sang', phone: '0901234567' }]);
+  assert.equal(f.customers[0].phone, '0901234567');
+  assert.equal(f.customers[0].memberId, 'M1');
+  assert.equal([...f.states.values()][0].contextData.profileStep, null);
+  assert.equal(response.length, 2);
+  assert.match(response[1].content.text, /đặt món hay kiểm tra/);
+
+  // The gate no longer intercepts once a name is on file.
+  const next = f.send('catalog');
+  assert.equal(next[0].type, 'list');
+});
+
+test('skipping the phone number clears the gate without ever calling memberRepository', () => {
+  let resolveCalled = false;
+  const f = fixture({
+    skipProfileWarmup: true,
+    memberRepository: { resolve: () => { resolveCalled = true; return { memberId: 'M1' }; } }
+  });
+  f.send('/start');
+  f.send('Sang');
+  f.send('bỏ qua');
+  assert.equal(resolveCalled, false);
+  assert.equal(f.customers[0].phone, null);
+  assert.equal(f.customers[0].memberId, undefined);
+});
+
+test('member resolution failure is swallowed -- ordering must never block on a POS outage', () => {
+  const f = fixture({
+    skipProfileWarmup: true,
+    memberRepository: { resolve: () => { throw new Error('POS unreachable'); } }
+  });
+  f.send('/start');
+  f.send('Sang');
+  const response = f.send('0901234567');
+  assert.equal(f.customers[0].phone, '0901234567');
+  assert.equal(f.customers[0].memberId, undefined);
+  assert.match(response[1].content.text, /đặt món hay kiểm tra/);
+});
+
+test('collecting a name is skipped entirely without a memberRepository dependency configured', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  f.send('/start');
+  f.send('Sang');
+  const response = f.send('0901234567');
+  assert.equal(f.customers[0].phone, '0901234567');
+  assert.equal(f.customers[0].memberId, undefined);
+  assert.match(response[1].content.text, /đặt món hay kiểm tra/);
+});
+
+test('confirm_order carries the resolved memberId on the order and the customer name on the outbound text', () => {
+  const f = fixture({
+    skipProfileWarmup: true,
+    memberRepository: { resolve: () => ({ memberId: 'M1' }) }
+  });
+  f.send('/start');
+  f.send('Sang');
+  f.send('0901234567');
+  f.send('catalog');
+  f.send('', { action: 'add_item', productId: 'p1' });
+  f.send('', { action: 'checkout' });
+  const confirmed = f.send('', { action: 'confirm_order' });
+  assert.equal(f.orders[0].memberId, 'M1');
+  assert.equal(confirmed[0].content.customerName, 'Sang');
+});
+
+test('confirm_order defaults memberId to null when no member was resolved, and carries whatever name is on file', () => {
+  // fixture()'s default warmup ("Test Customer", then skipping the phone)
+  // means a displayName exists but no memberId was ever resolved.
+  const f = fixture();
+  f.send('catalog');
+  f.send('', { action: 'add_item', productId: 'p1' });
+  f.send('', { action: 'checkout' });
+  const confirmed = f.send('', { action: 'confirm_order' });
+  assert.equal(f.orders[0].memberId, null);
+  assert.equal(confirmed[0].content.customerName, 'Test Customer');
 });
 
 function createAwaitingPaymentOrder(f) {
@@ -301,7 +450,7 @@ test('confirmPayment marks order paid, advances state, and returns a notificatio
   assert.deepEqual(result.outboundMessages, [{
     type: 'text',
     content: {
-      text: `Payment confirmed for order ${orderId}. Thank you!`,
+      text: `Đã xác nhận thanh toán cho đơn #${orderId}. Cảm ơn bạn!`,
       orderId
     }
   }]);
@@ -394,6 +543,46 @@ test('expireOrder uses OrderNotFoundError for an unknown order', () => {
   const f = fixture();
   assert.throws(
     () => f.service.expireOrder('missing-order'),
+    (error) => error instanceof OrderService.Errors.OrderNotFoundError &&
+      error.orderId === 'missing-order'
+  );
+});
+
+test('sendPaymentQr returns the QR for an awaiting order without changing its status', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  const beforeOrder = structuredClone(f.orders[0]);
+  const beforeState = structuredClone([...f.states.values()][0]);
+
+  const result = f.service.sendPaymentQr(orderId);
+
+  assert.deepEqual(result.customer.platformLinks, [
+    { platform: 'test-channel', platformUserId: 'user-1' }
+  ]);
+  assert.deepEqual(result.outboundMessages.map((message) => message.type), ['text', 'image']);
+  assert.equal(result.outboundMessages[1].content.data, `qr:${orderId}:35000`);
+  assert.equal(result.outboundMessages[1].content.orderId, orderId);
+  // Sending the QR is not a state transition -- order/status/state are
+  // untouched, unlike confirmPayment/expireOrder.
+  assert.deepEqual(f.orders[0], beforeOrder);
+  assert.deepEqual([...f.states.values()][0], beforeState);
+});
+
+test('sendPaymentQr rejects an order that already left AWAITING_PAYMENT', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  f.service.confirmPayment(orderId, 'staff@example.com');
+  assert.throws(
+    () => f.service.sendPaymentQr(orderId),
+    (error) => error instanceof OrderService.Errors.PaymentAlreadyResolvedError &&
+      error.code === 'PAYMENT_ALREADY_RESOLVED' && error.status === 'PAID'
+  );
+});
+
+test('sendPaymentQr uses OrderNotFoundError for an unknown order', () => {
+  const f = fixture();
+  assert.throws(
+    () => f.service.sendPaymentQr('missing-order'),
     (error) => error instanceof OrderService.Errors.OrderNotFoundError &&
       error.orderId === 'missing-order'
   );

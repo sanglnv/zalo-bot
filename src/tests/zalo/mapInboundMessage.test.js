@@ -28,3 +28,26 @@ test('ignores non-user-message events and enforces payload limit', () => {
   assert.equal(mapper.mapInboundMessage({ event_name: 'follow' }), null);
   assert.throws(() => mapper.encodeQueryPayload({ action: 'x'.repeat(1001) }), /1000/);
 });
+
+test('select_category round-trips categoryId (was previously dropped entirely)', () => {
+  const encoded = mapper.encodeQueryPayload({ action: 'select_category', categoryId: 'CAT_DRINKS' });
+  assert.equal(encoded, 'zc:select_category:CAT_DRINKS');
+  assert.deepEqual(mapper.decodeQueryPayload(encoded), {
+    action: 'select_category', categoryId: 'CAT_DRINKS'
+  });
+});
+
+test('select_category requires categoryId on both encode and decode', () => {
+  assert.throws(
+    () => mapper.encodeQueryPayload({ action: 'select_category' }),
+    /select_category query payload requires categoryId/
+  );
+  assert.throws(
+    () => mapper.decodeQueryPayload('zc:select_category'),
+    /select_category query payload requires categoryId/
+  );
+  assert.throws(
+    () => mapper.decodeQueryPayload('zc:select_category:CAT1:extra'),
+    /Invalid select_category Zalo query payload/
+  );
+});

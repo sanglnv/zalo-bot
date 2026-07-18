@@ -105,47 +105,84 @@ var TelegramWebhook = (function () {
       } : { chatId: chatId };
     }
 
+    // QR is no longer attached to confirm_order's outbound (see
+    // core/orderService.js) -- only a text confirmation carrying `items` is
+    // emitted, which is enough to build the ops-chat notification.
     function confirmedOrderSummary(outbound, inbound) {
       if (!inbound || !inbound.payload || inbound.payload.action !== 'confirm_order') return null;
       var confirmation = outbound.find(function (message) {
         return message.type === 'text' && message.content && message.content.orderId != null;
       });
-      var paymentImage = outbound.find(function (message) {
-        return message.type === 'image' && message.content && message.content.purpose === 'payment_qr';
-      });
-      if (!confirmation || !paymentImage) return null;
+      if (!confirmation) return null;
       return {
         orderId: String(confirmation.content.orderId),
-        amount: Number(confirmation.content.amount || 0)
+        amount: Number(confirmation.content.amount || 0),
+        items: Array.isArray(confirmation.content.items) ? confirmation.content.items : [],
+        customerName: confirmation.content.customerName || ''
       };
     }
 
-    function notifyOperationsGroup(summary, customerChatId) {
+    // Staff message in the ops chat, e.g. "/thanhtoan HD123". Handled
+    // entirely outside orderService.handleMessage -- it's not a customer
+    // order action, and staff aren't Clawbot "customers". Returns true when
+    // the update was an ops command (handled, whether successfully or not)
+    // so the caller skips the normal customer pipeline for it.
+    function handleOpsThanhToanCommand(update, updateId) {
+      var message = update && update.message;
+      if (!message || typeof message.text !== 'string' || !message.chat) return false;
       var opsChatId = null;
-      try {
-        opsChatId = PropertiesService.getScriptProperties().getProperty('TELEGRAM_OPERATIONS_CHAT_ID');
-      } catch (ignore) {}
-      if (!opsChatId) {
-        if (typeof console !== 'undefined' && console.warn) {
-          console.warn(JSON.stringify({ event: 'operations_notify_skipped', reason: 'not_configured' }));
+      try { opsChatId = OperationsNotifier.operationsChatId(); } catch (ignore) {}
+      if (!opsChatId || String(message.chat.id) !== String(opsChatId)) return false;
+      var parsed = PaymentQrDispatch.parseThanhToanCommand(message.text);
+      if (parsed === false) return false;
+
+      function reply(text) {
+        try {
+          dependencies.client.execute({ method: 'sendMessage', params: { chat_id: opsChatId, text: text } });
+        } catch (error) {
+          logError(error, { updateId: updateId, stage: 'ops_command_reply' });
         }
-        return;
       }
+
+      var alreadyClaimed = dependencies.withLock(function () {
+        if (dependencies.processedUpdateRepository.has(updateId)) return true;
+        dependencies.processedUpdateRepository.markProcessed(updateId, dependencies.now().toISOString());
+        return false;
+      });
+      if (alreadyClaimed) return true;
+
+      var senderId = message.from && message.from.id;
+      if (!OperationsNotifier.isAuthorizedOpsAdmin(senderId)) {
+        reply('Bạn không có quyền thực hiện lệnh này.');
+        updateDeliveryStatus(updateId, 'delivered');
+        return true;
+      }
+      if (parsed === null) {
+        reply('Cú pháp: /thanhtoan <mã đơn>');
+        updateDeliveryStatus(updateId, 'delivered');
+        return true;
+      }
+
+      var result;
       try {
-        dependencies.client.execute({
-          method: 'sendMessage',
-          params: {
-            chat_id: opsChatId,
-            text: '🔔 ĐƠN MỚI #' + summary.orderId + '\n' +
-              'Khách Telegram: ' + customerChatId + '\n' +
-              'Tổng: ' + Number(summary.amount || 0).toLocaleString('vi-VN') + ' đ\n' +
-              'Trạng thái: Chờ thanh toán\n' +
-              'Xem chi tiết trong Sheet Orders.'
-          }
-        });
+        result = PaymentQrDispatch.dispatchPaymentQr(parsed);
       } catch (error) {
-        logError(error, { stage: 'operations_notify', orderId: summary.orderId });
+        logError(error, { updateId: updateId, stage: 'ops_command_dispatch', orderId: parsed });
+        reply('Có lỗi xảy ra khi gửi QR cho đơn ' + parsed + '.');
+        updateDeliveryStatus(updateId, 'failed');
+        return true;
       }
+      if (result.ok) {
+        reply('Đã gửi QR thanh toán cho đơn ' + parsed + '.');
+      } else if (result.reason === 'not_found') {
+        reply('Không tìm thấy đơn ' + parsed + '.');
+      } else if (result.reason === 'already_resolved') {
+        reply('Đơn ' + parsed + ' không còn chờ thanh toán (trạng thái: ' + (result.status || '?') + ').');
+      } else {
+        reply('Gửi QR cho đơn ' + parsed + ' thất bại: ' + (result.message || 'không xác định'));
+      }
+      updateDeliveryStatus(updateId, result.ok ? 'delivered' : 'failed');
+      return true;
     }
 
     function handleProcessingFailure(error, details) {
@@ -246,6 +283,7 @@ var TelegramWebhook = (function () {
             : null
         });
         chatId = rawChatId(update);
+        if (handleOpsThanhToanCommand(update, updateId)) return successResponse();
         answerCallback(update, updateId);
         var transactionStartedAtMs = Date.now();
         transaction = dependencies.withLock(function () {
@@ -276,9 +314,13 @@ var TelegramWebhook = (function () {
           commandCount: transaction.commands.length
         });
 
-        if (!transaction.duplicate && transaction.recovery && transaction.recovery.orderId &&
-            transaction.confirmedOrderSummary) {
-          notifyOperationsGroup(transaction.confirmedOrderSummary, chatId);
+        if (!transaction.duplicate && transaction.confirmedOrderSummary) {
+          OperationsNotifier.notifyStaffOfNewOrder({
+            orderId: transaction.confirmedOrderSummary.orderId,
+            totalAmount: transaction.confirmedOrderSummary.amount,
+            items: transaction.confirmedOrderSummary.items,
+            customerName: transaction.confirmedOrderSummary.customerName
+          }, 'telegram', dependencies.errorLogRepository);
         }
 
         if (transaction.duplicate) {
@@ -353,7 +395,7 @@ function createDefaultTelegramWebhook() {
     }
   }
   var orderService = OrderService.create({
-    orderRepository: SheetOrderRepository(),
+    orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
     getCatalog: TelegramRuntime.loadCatalog,
@@ -412,10 +454,33 @@ function registerWebhook(dropPendingUpdates) {
     drop_pending_updates: dropPendingUpdates === true
   };
   params.secret_token = webhookSecret;
-  return TelegramClient.create().execute({
+  var client = TelegramClient.create();
+  var webhookResult = client.execute({
     method: 'setWebhook',
     params: params
   });
+  var vietnameseCommands = [
+    { command: 'batdau', description: 'Bắt đầu đặt món' },
+    { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+    { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
+    { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
+    { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },
+    { command: 'huydon', description: 'Hủy giỏ hoặc đơn hiện tại' },
+    { command: 'thanhtoan', description: 'Nhận mã QR thanh toán' },
+    { command: 'trogiup', description: 'Xem hướng dẫn sử dụng bot' }
+  ];
+  client.execute({
+    method: 'setMyCommands',
+    params: { commands: vietnameseCommands }
+  });
+  client.execute({
+    method: 'setMyCommands',
+    params: {
+      commands: vietnameseCommands,
+      language_code: 'vi'
+    }
+  });
+  return webhookResult;
 }
 
 if (typeof module !== 'undefined' && module.exports) {

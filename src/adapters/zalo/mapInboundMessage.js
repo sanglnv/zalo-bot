@@ -12,6 +12,17 @@ function encodeQueryPayload(payload) {
     throw new TypeError('Zalo query payload action must be a non-empty string');
   }
   var parts = [encodeURIComponent(payload.action)];
+  if (payload.action === 'select_category') {
+    if (payload.categoryId == null || payload.categoryId === '') {
+      throw new TypeError('select_category query payload requires categoryId');
+    }
+    parts.push(encodeURIComponent(String(payload.categoryId)));
+    var encodedCategory = ZALO_QUERY_PREFIX + parts.join(':');
+    if (utf8ByteLength(encodedCategory) > ZALO_QUERY_PAYLOAD_MAX_BYTES) {
+      throw new RangeError('Zalo query payload exceeds 1000 UTF-8 bytes');
+    }
+    return encodedCategory;
+  }
   if (payload.productId != null) parts.push(encodeURIComponent(String(payload.productId)));
   if (payload.quantity != null) {
     if (!Number.isInteger(payload.quantity) || payload.quantity <= 0) {
@@ -55,6 +66,13 @@ function decodeQueryPayload(value) {
       throw new Error('Invalid add_item Zalo query payload');
     }
     return { action: action, productId: productId, quantity: quantity };
+  }
+  if (action === 'select_category') {
+    // productId was already decoded above (parts[1]) -- for this action it
+    // is the categoryId, just named generically by the shared decode step.
+    if (!productId) throw new Error('select_category query payload requires categoryId');
+    if (parts.length > 2) throw new Error('Invalid select_category Zalo query payload');
+    return { action: action, categoryId: productId };
   }
   if (parts.length > 1) throw new Error('Zalo query action does not accept arguments: ' + action);
   return { action: action };

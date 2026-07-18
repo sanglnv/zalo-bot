@@ -12,7 +12,7 @@ function paymentTimeoutMinutes() {
 
 function buildPaymentExpiryOrderService() {
   return OrderService.create({
-    orderRepository: SheetOrderRepository(),
+    orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
     getCatalog: TelegramRuntime.loadCatalog,
@@ -26,7 +26,7 @@ function buildPaymentExpiryOrderService() {
 function scanAndExpireStalePayments() {
   return recordDuration('scanAndExpireStalePayments', function () {
     return PaymentExpiryRunner.create({
-      orderRepository: SheetOrderRepository(),
+      orderRepository: BotOrderRepository(),
       orderService: buildPaymentExpiryOrderService(),
       dispatchNotifications: NotificationDispatcher.dispatchNotifications,
       registry: buildNotificationRegistry(),

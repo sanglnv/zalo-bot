@@ -6,9 +6,8 @@ const assert = require('node:assert/strict');
 require.extensions['.gs'] = require.extensions['.js'];
 const TelegramRuntime = require('../../adapters/telegram/TelegramRuntime.gs');
 
-test('loads catalog from Script Properties and creates a direct VietQR Quick Link', () => {
+test('loads catalog from the menu source webhook and creates a direct VietQR Quick Link', () => {
   const values = {
-    CATALOG_JSON: '[{"productId":"p1","name":"Coffee","price":35000,"isAvailable":true}]',
     VIETQR_BANK_ID: '970415',
     VIETQR_ACCOUNT_NO: '113366668888',
     VIETQR_ACCOUNT_NAME: 'NGUYEN VAN A',
@@ -18,6 +17,9 @@ test('loads catalog from Script Properties and creates a direct VietQR Quick Lin
   };
   global.PropertiesService = {
     getScriptProperties: () => ({ getProperty: (name) => values[name] || null })
+  };
+  global.BotOrderWebhookClient = {
+    fetchMenuCatalog: () => [{ productId: 'p1', name: 'Coffee', price: 35000, isAvailable: true }]
   };
   assert.equal(TelegramRuntime.loadCatalog()[0].productId, 'p1');
   assert.equal(

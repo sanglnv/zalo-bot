@@ -66,7 +66,7 @@ test('list_pending returns orders from the order repository', () => {
     { orderId: 'o1', customerId: 'c1', status: 'AWAITING_PAYMENT', totalAmount: 50000,
       items: [], createdAt: '2026-07-13T09:00:00.000Z', updatedAt: '2026-07-13T09:00:00.000Z' }
   ];
-  global.SheetOrderRepository = () => ({
+  global.BotOrderRepository = () => ({
     findAwaitingPaymentOlderThan(_cutoff, limit) {
       assert.equal(limit, 20);
       return orders;
@@ -88,7 +88,7 @@ test('list_pending returns orders from the order repository', () => {
 });
 
 test('list_pending clamps an oversized limit to 50', () => {
-  global.SheetOrderRepository = () => ({
+  global.BotOrderRepository = () => ({
     findAwaitingPaymentOlderThan(_cutoff, limit) {
       assert.equal(limit, 50);
       return [];
@@ -101,7 +101,7 @@ test('list_pending clamps an oversized limit to 50', () => {
 });
 
 test('get_order reports not found for an unknown order', () => {
-  global.SheetOrderRepository = () => ({ findById: () => null });
+  global.BotOrderRepository = () => ({ findById: () => null });
 
   const response = AdminApi.doAdminPostWithoutMetrics({
     parameter: { action: 'get_order', admin_token: 'admin-secret', orderId: 'missing' }
@@ -111,7 +111,7 @@ test('get_order reports not found for an unknown order', () => {
 });
 
 test('get_order returns the order and a redacted customer', () => {
-  global.SheetOrderRepository = () => ({
+  global.BotOrderRepository = () => ({
     findById: (orderId) => (orderId === 'o1' ? {
       orderId: 'o1', customerId: 'c1', status: 'PAID', totalAmount: 50000, items: [],
       createdAt: '2026-07-13T09:00:00.000Z', updatedAt: '2026-07-13T09:05:00.000Z',
@@ -242,13 +242,30 @@ test('get_catalog falls back to TelegramRuntime when gateway properties are not 
   });
 });
 
+test('get_catalog_from_pos always reads the POS webhook directly, never the D1 mirror', () => {
+  global.BotOrderWebhookClient = {
+    fetchMenuCatalog: () => [{ productId: 'p1', name: 'Cà phê', price: 35000, isAvailable: true }]
+  };
+  global.UrlFetchApp = { fetch() { throw new Error('must not call the D1 gateway for this action'); } };
+
+  const response = AdminApi.doAdminPostWithoutMetrics({
+    parameter: { action: 'get_catalog_from_pos', admin_token: 'admin-secret' }
+  });
+
+  assert.deepEqual(readJsonResponse(response), {
+    ok: true,
+    source: 'bot_order_webhook',
+    catalog: [{ productId: 'p1', name: 'Cà phê', price: 35000, isAvailable: true }]
+  });
+});
+
 test('unknown actions and thrown errors are reported without crashing', () => {
   const unknown = AdminApi.doAdminPostWithoutMetrics({
     parameter: { action: 'delete_everything', admin_token: 'admin-secret' }
   });
   assert.deepEqual(readJsonResponse(unknown), { ok: false, error: 'UNKNOWN_ACTION' });
 
-  global.SheetOrderRepository = () => ({
+  global.BotOrderRepository = () => ({
     findAwaitingPaymentOlderThan() { throw new Error('sheet unavailable'); }
   });
   const errored = AdminApi.doAdminPostWithoutMetrics({

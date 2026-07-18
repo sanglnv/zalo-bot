@@ -13,6 +13,7 @@ function queryButton(button) {
     payload: mapperDependencies().encodeQueryPayload({
       action: button.action || 'add_item',
       productId: button.productId,
+      categoryId: button.categoryId,
       quantity: button.quantity
     })
   };
@@ -30,7 +31,7 @@ function renderOutboundMessage(message, userId) {
     body.message.text = content.text;
   } else if (message.type === 'list') {
     if (!Array.isArray(content.items)) throw new TypeError('list content.items must be an array');
-    body.message.text = typeof content.title === 'string' ? content.title : 'Catalog';
+    body.message.text = typeof content.title === 'string' ? content.title : 'Danh mục món';
     body.message.attachment = {
       type: 'template',
       payload: {
@@ -51,12 +52,29 @@ function renderOutboundMessage(message, userId) {
     };
   } else if (message.type === 'button') {
     if (!Array.isArray(content.buttons)) throw new TypeError('button content.buttons must be an array');
-    if (content.buttons.length > 5) throw new RangeError('Zalo supports at most 5 buttons');
     body.message.text = typeof content.text === 'string' ? content.text : '';
-    body.message.attachment = {
-      type: 'template',
-      payload: { buttons: content.buttons.map(queryButton) }
-    };
+    if (content.buttons.length > 5) {
+      // Zalo's button template hard-caps at 5. This happens in practice
+      // once a shop has more than ~4 catalog categories (core always adds
+      // a trailing "Giỏ hàng" button). Rather than crash (or silently drop
+      // categories, which would make them permanently unreachable), degrade
+      // to the list template -- same query payload per item via
+      // default_action, but with no button-count limit.
+      body.message.attachment = {
+        type: 'template',
+        payload: {
+          template_type: 'list',
+          elements: content.buttons.map(function (button) {
+            return { title: String(button.label || ''), default_action: queryButton(button) };
+          })
+        }
+      };
+    } else {
+      body.message.attachment = {
+        type: 'template',
+        payload: { buttons: content.buttons.map(queryButton) }
+      };
+    }
   } else if (message.type === 'image') {
     if (typeof content.data !== 'string' || !/^https?:\/\//.test(content.data)) {
       throw new TypeError('image content.data must be a direct HTTP(S) URL');
