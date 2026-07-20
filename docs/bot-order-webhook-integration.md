@@ -129,10 +129,25 @@ As of 2026-07-18 the POS exposes member actions (`getMemberProfile`, `listMember
   transition. Typing "bỏ qua"/"bo qua"/"skip" for the phone step skips member resolution entirely —
   name-only customers are supported.
 - **`MemberRepository.gs`** (optional `dependencies.memberRepository`, duck-typed
-  `{resolve({name, phone}): {memberId}|null}`): finds an existing POS member by exact phone match via
-  `listMembers(phone)`, or creates one via `createMember` if none exists. `id`/`points`/`totalSpend`
-  are POS-owned and never sent on write. A POS outage during resolution is swallowed — ordering must
-  never block on this — so `customer.memberId` simply stays unset for that session.
+  `{resolve({name, phone}): {memberId}|null, update(memberId, {name, phone}): {memberId}|null}`):
+  `resolve()` finds an existing POS member by exact phone match via `listMembers(phone)`, or creates
+  one via `createMember` if none exists; `update()` pushes a later edit to an already-linked member via
+  `updateMember` instead of creating a duplicate. `id`/`points`/`totalSpend` are POS-owned and never
+  sent on write. A POS outage during resolution/update is swallowed — ordering must never block on
+  this — so `customer.memberId` simply stays unset (or unchanged) for that session.
+  **Wired into production as of 2026-07-19**: `createDefaultTelegramWebhook`/`createDefaultZaloWebhook`
+  in the respective `webhook.gs` files pass `memberRepository: MemberRepository()` to
+  `OrderService.create(...)`. (This was initially missed — the profile gate asked for name/phone and
+  saved them locally, but never actually called the POS, since `dependencies.memberRepository` was
+  `undefined` in the live wiring, only in tests.)
+- **Customers can proactively re-enter their name/phone** via `/thongtin` or `/capnhat` (or an
+  `update_profile` button/action — see `helpResponse()`'s menu). This re-runs the same
+  `profileStep`-based flow as first-time onboarding, but shows the current name/phone and lets the
+  customer keep either by typing "bỏ qua"/"bo qua"/"skip" (name can only be skipped once one already
+  exists — a brand-new customer must supply real text). If `customer.memberId` is already set, the
+  edit syncs via `MemberRepository.update()`; otherwise it falls back to `resolve()` (find-or-create).
+  A button tap for `update_profile` while already mid-collection does **not** restart the flow — it's
+  deferred to the in-progress answer, same as any other non-free-text input during collection.
 - **`Customers` sheet** gained a 5th column, `memberId` (nullable), alongside the existing
   `phone`/`displayName`.
 - **`memberId` flows into `createOrder`**: `BotOrderRepository.save()` passes `order.memberId` through

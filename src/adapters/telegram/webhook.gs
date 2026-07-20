@@ -398,6 +398,7 @@ function createDefaultTelegramWebhook() {
     orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
+    memberRepository: MemberRepository(),
     getCatalog: TelegramRuntime.loadCatalog,
     createQrContent: TelegramRuntime.createPaymentQrUrl,
     createId: TelegramRuntime.createId,

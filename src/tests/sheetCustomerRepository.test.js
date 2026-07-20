@@ -129,3 +129,26 @@ test('MemberRepository.resolve() creates a new member when no existing phone mat
   assert.deepEqual(repo.resolve({ name: 'Sang', phone: '0901234567' }), { memberId: 'M-new' });
   assert.deepEqual(createCalls, [{ name: 'Sang', phone: '0901234567' }]);
 });
+
+test('MemberRepository.update() calls updateMember with the given memberId, never listMembers/createMember', () => {
+  const updateCalls = [];
+  let listOrCreateCalled = false;
+  const repo = loadMemberRepository({
+    listMembers: () => { listOrCreateCalled = true; return []; },
+    createMember: () => { listOrCreateCalled = true; return { memberId: 'unused' }; },
+    updateMember(memberId, member) { updateCalls.push({ memberId, member }); return { memberId }; }
+  })();
+  const result = repo.update('M1', { name: 'Nguyen Van A', phone: '0909999999' });
+  assert.deepEqual(result, { memberId: 'M1' });
+  assert.deepEqual(updateCalls, [{ memberId: 'M1', member: { name: 'Nguyen Van A', phone: '0909999999' } }]);
+  assert.equal(listOrCreateCalled, false);
+});
+
+test('MemberRepository.update() returns null without calling the POS when memberId is missing', () => {
+  let called = false;
+  const repo = loadMemberRepository({
+    updateMember: () => { called = true; return { memberId: 'unused' }; }
+  })();
+  assert.equal(repo.update(null, { name: 'Sang', phone: '0901234567' }), null);
+  assert.equal(called, false);
+});

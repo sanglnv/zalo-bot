@@ -210,6 +210,7 @@ function createDefaultZaloWebhook() {
     orderRepository: BotOrderRepository(),
     customerRepository: SheetCustomerRepository(),
     conversationStateRepository: SheetConversationStateRepository(),
+    memberRepository: MemberRepository(),
     getCatalog: ZaloRuntime.loadCatalog,
     createQrContent: ZaloRuntime.createPaymentQrUrl,
     createId: ZaloRuntime.createId,

@@ -55,11 +55,18 @@ UserActionError.prototype.constructor = UserActionError;
  * @param {Object} dependencies.orderRepository
  * @param {Object} dependencies.customerRepository
  * @param {Object} dependencies.conversationStateRepository
- * @param {{resolve: function({name: string, phone: string}): ({memberId: string}|null)}=} dependencies.memberRepository
- *   Optional. Resolves a POS member for a customer's collected name+phone
- *   (see the profile-collection step in handleMessageTransaction). When
- *   absent, name/phone are still collected and stored locally, just never
- *   linked to a POS member/loyalty record.
+ * @param {{
+ *   resolve: function({name: string, phone: string}): ({memberId: string}|null),
+ *   update: (function(string, {name: string, phone: string}): ({memberId: string}|null))=
+ * }=} dependencies.memberRepository
+ *   Optional. Resolves (find-or-create) a POS member for a customer's
+ *   collected name+phone (see the profile-collection step in
+ *   handleMessageTransaction). When the customer later re-runs that flow via
+ *   /thongtin and already has a memberId, `update` is used instead (if
+ *   provided) to sync the edit to the same POS member rather than creating a
+ *   new one. When `dependencies.memberRepository` is absent entirely,
+ *   name/phone are still collected and stored locally, just never linked to
+ *   a POS member/loyalty record.
  * @param {function(): import('./domain').Product[]} dependencies.getCatalog
  * @param {function(Object): string} dependencies.createQrContent
  * @param {function(): string} dependencies.createId
@@ -164,13 +171,28 @@ function createOrderService(dependencies) {
     }));
   }
 
-  function askNameResponse() {
+  // `currentName`/`currentPhone` are only non-empty when this is a re-run of
+  // the flow via /thongtin (see profileGateResponse's `update_profile` entry
+  // point) -- first-time onboarding always calls these with nothing on file.
+  function askNameResponse(currentName) {
+    if (currentName) {
+      return [outbound('text', {
+        text: 'Tên hiện tại: ' + currentName + '. Nhập tên mới, hoặc gõ "bỏ qua" để giữ nguyên:'
+      })];
+    }
     return [outbound('text', { text: 'Xin chào! Trước khi bắt đầu, cho mình xin tên của bạn nhé:' })];
   }
 
-  function askPhoneResponse(name) {
+  function askPhoneResponse(name, currentPhone) {
+    var greeting = 'Cảm ơn ' + name + '! ';
+    if (currentPhone) {
+      return [outbound('text', {
+        text: greeting + 'Số điện thoại hiện tại: ' + currentPhone +
+          '. Nhập số mới để cập nhật, hoặc gõ "bỏ qua" để giữ nguyên:'
+      })];
+    }
     return [outbound('text', {
-      text: 'Cảm ơn ' + name + '! Cho mình xin số điện thoại để tích điểm thành viên nhé ' +
+      text: greeting + 'Cho mình xin số điện thoại để tích điểm thành viên nhé ' +
         '(gõ "bỏ qua" nếu chưa muốn cung cấp):'
     })];
   }
@@ -194,12 +216,15 @@ function createOrderService(dependencies) {
   // there is no other signal for "never asked"). Free-text replies are
   // consumed as the answer; button taps re-prompt instead of being
   // interpreted as a command, since the customer hasn't been asked yet.
+  // A customer who already has a name on file can voluntarily re-enter this
+  // same flow via the `update_profile` action (/thongtin) -- see its
+  // dedicated entry point in handleMessageTransaction, which sets
+  // `profileStep` back to PROFILE_STEP_NAME before calling this function.
   //
   // Phone -> POS member resolution is best-effort and never blocks ordering:
-  // `dependencies.memberRepository` is optional (only PaymentQrDispatch's/
-  // the live webhooks' OrderService instances wire it up today), and any
-  // resolve() failure is swallowed -- a POS outage must not stop a customer
-  // from placing an order over a missing member record.
+  // `dependencies.memberRepository` is optional, and any resolve()/update()
+  // failure is swallowed -- a POS outage must not stop a customer from
+  // placing an order over a missing/stale member record.
   function profileGateResponse(state, customer, message) {
     var step = state.contextData && state.contextData.profileStep;
     // Once a name is on file AND there's no pending step, the gate is fully
@@ -212,29 +237,46 @@ function createOrderService(dependencies) {
     var isFreeText = !message.payload && rawText !== '';
 
     if (step === PROFILE_STEP_NAME) {
-      if (!isFreeText) return askNameResponse();
-      var name = rawText.slice(0, 80);
-      customer.displayName = name;
-      dependencies.customerRepository.save(customer);
+      if (!isFreeText) return askNameResponse(customer.displayName);
+      var skipName = /^(bỏ qua|bo qua|skip)$/i.test(rawText);
+      var name = customer.displayName;
+      if (skipName && name) {
+        // "Keep as-is" only makes sense once a name already exists (the
+        // customer re-ran /thongtin) -- during first-time onboarding there
+        // is nothing to keep, so fall through and require real text.
+      } else if (skipName) {
+        return askNameResponse(null);
+      } else {
+        name = rawText.slice(0, 80);
+        customer.displayName = name;
+        dependencies.customerRepository.save(customer);
+      }
       setProfileStep(state, PROFILE_STEP_PHONE);
-      return askPhoneResponse(name);
+      return askPhoneResponse(name, customer.phone);
     }
 
     if (step === PROFILE_STEP_PHONE) {
-      if (!isFreeText) return askPhoneResponse(customer.displayName);
+      if (!isFreeText) return askPhoneResponse(customer.displayName, customer.phone);
       var skip = /^(bỏ qua|bo qua|skip)$/i.test(rawText);
       if (!skip) {
         var phone = rawText.replace(/[^0-9+]/g, '').slice(0, 20);
-        if (phone) {
-          customer.phone = phone;
-          if (dependencies.memberRepository && typeof dependencies.memberRepository.resolve === 'function') {
-            try {
-              var member = dependencies.memberRepository.resolve({ name: customer.displayName, phone: phone });
-              if (member && member.memberId) customer.memberId = member.memberId;
-            } catch (ignore) {
-              // Best-effort: POS member linking must never block ordering.
-            }
-          }
+        if (phone) customer.phone = phone;
+      }
+      // Runs whenever there's a phone on file at all -- covers both a fresh
+      // entry this turn and "kept as-is" via skip during an /thongtin
+      // re-run. If a memberId already exists, sync the edit with update();
+      // otherwise fall back to find-or-create via resolve().
+      if (dependencies.memberRepository && customer.phone) {
+        try {
+          var profile = { name: customer.displayName, phone: customer.phone };
+          var member = customer.memberId && typeof dependencies.memberRepository.update === 'function'
+            ? dependencies.memberRepository.update(customer.memberId, profile)
+            : (typeof dependencies.memberRepository.resolve === 'function'
+              ? dependencies.memberRepository.resolve(profile)
+              : null);
+          if (member && member.memberId) customer.memberId = member.memberId;
+        } catch (ignore) {
+          // Best-effort: POS member linking must never block ordering.
         }
       }
       dependencies.customerRepository.save(customer);
@@ -243,7 +285,7 @@ function createOrderService(dependencies) {
     }
 
     setProfileStep(state, PROFILE_STEP_NAME);
-    return askNameResponse();
+    return askNameResponse(customer.displayName);
   }
 
   function formatMoney(amount) {
@@ -305,11 +347,13 @@ function createOrderService(dependencies) {
         '/xemdon — xem trạng thái đơn\n' +
         '/huydon — hủy giỏ hoặc đơn hiện tại\n' +
         '/thanhtoan — nhận lại mã QR\n' +
+        '/thongtin — cập nhật tên/số điện thoại\n' +
         '/trogiup — xem hướng dẫn này',
       buttons: [
         { action: 'catalog', label: 'Danh mục' },
         { action: 'cart', label: 'Giỏ hàng' },
-        { action: 'status', label: 'Trạng thái' }
+        { action: 'status', label: 'Trạng thái' },
+        { action: 'update_profile', label: 'Cập nhật thông tin' }
       ]
     })];
   }
@@ -368,7 +412,9 @@ function createOrderService(dependencies) {
       xemdon: 'status',
       donhang: 'status',
       huydon: 'cancel',
-      trogiup: 'help'
+      trogiup: 'help',
+      thongtin: 'update_profile',
+      capnhat: 'update_profile'
     };
     return vietnameseCommands[action] || action;
   }
@@ -383,9 +429,18 @@ function createOrderService(dependencies) {
       customerId: customer.customerId,
       currentState: state.currentState
     });
+    var action = actionOf(message);
+    // Customer voluntarily wants to re-enter name/phone (/thongtin or
+    // /capnhat, or an `update_profile` button). Only takes effect between
+    // profile-collection runs -- while already mid-collection (`profileStep`
+    // set), free text is deferred to profileGateResponse below as the
+    // in-progress answer instead, same as any other text during that flow.
+    if (action === 'update_profile' && !(state.contextData && state.contextData.profileStep)) {
+      state = setProfileStep(state, PROFILE_STEP_NAME);
+      return askNameResponse(customer.displayName);
+    }
     var profileGate = profileGateResponse(state, customer, message);
     if (profileGate) return profileGate;
-    var action = actionOf(message);
 
     if (action === 'start' || action === 'help') {
       var activeAtStart = pendingOrder(state, customer);

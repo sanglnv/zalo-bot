@@ -398,6 +398,62 @@ test('collecting a name is skipped entirely without a memberRepository dependenc
   assert.match(response[1].content.text, /đặt món hay kiểm tra/);
 });
 
+test('/thongtin lets an already-registered customer re-enter name/phone, showing current values and defaulting to keep-as-is on skip', () => {
+  const resolveCalls = [];
+  const updateCalls = [];
+  const f = fixture({
+    memberRepository: {
+      resolve(profile) { resolveCalls.push(profile); return { memberId: 'M1' }; },
+      update(memberId, profile) { updateCalls.push({ memberId, profile }); return { memberId }; }
+    }
+  });
+  // fixture()'s default warmup already gave this customer 'Test Customer'
+  // with no phone/memberId on file yet.
+  const askName = f.send('/thongtin');
+  assert.match(askName[0].content.text, /Tên hiện tại: Test Customer/);
+  const askPhone = f.send('bỏ qua');
+  assert.match(askPhone[0].content.text, /Cảm ơn Test Customer/);
+  assert.match(askPhone[0].content.text, /Cho mình xin số điện thoại/); // no phone on file yet -- first-time wording
+  const done = f.send('0909999999');
+  assert.equal(f.customers[0].displayName, 'Test Customer');
+  assert.equal(f.customers[0].phone, '0909999999');
+  assert.equal(f.customers[0].memberId, 'M1');
+  assert.deepEqual(resolveCalls, [{ name: 'Test Customer', phone: '0909999999' }]);
+  assert.equal(updateCalls.length, 0, 'no memberId yet -- must find-or-create via resolve, not update');
+  assert.match(done[1].content.text, /đặt món hay kiểm tra/);
+
+  // Second /thongtin run: memberId is now on file, so a name/phone edit
+  // must sync via update(), not resolve() (which would risk a duplicate).
+  const askName2 = f.send('/thongtin');
+  assert.match(askName2[0].content.text, /Tên hiện tại: Test Customer/);
+  const askPhone2 = f.send('Nguyen Van A');
+  assert.match(askPhone2[0].content.text, /Số điện thoại hiện tại: 0909999999/);
+  f.send('bỏ qua');
+  assert.equal(f.customers[0].displayName, 'Nguyen Van A');
+  assert.equal(f.customers[0].phone, '0909999999', 'kept as-is on skip');
+  assert.deepEqual(updateCalls, [{ memberId: 'M1', profile: { name: 'Nguyen Van A', phone: '0909999999' } }]);
+  assert.equal(resolveCalls.length, 1, 'resolve must not be called again once a memberId is on file');
+});
+
+test('/thongtin re-prompts if the customer tries to skip the name on a brand-new profile (nothing to keep yet)', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  f.send('/start');
+  const reprompt = f.send('bỏ qua');
+  assert.match(reprompt[0].content.text, /tên của bạn/);
+  assert.equal([...f.states.values()][0].contextData.profileStep, 'awaiting_name');
+});
+
+test('a button tap for update_profile mid-collection is deferred to the in-progress answer, not treated as a restart', () => {
+  const f = fixture({ skipProfileWarmup: true });
+  f.send('/start');
+  f.send('Sang');
+  // While mid phone-collection, an update_profile button tap must not
+  // restart the flow -- it re-prompts for the phone like any other
+  // non-free-text input during collection.
+  const reprompt = f.send('', { action: 'update_profile' });
+  assert.match(reprompt[0].content.text, /số điện thoại/);
+});
+
 test('confirm_order carries the resolved memberId on the order and the customer name on the outbound text', () => {
   const f = fixture({
     skipProfileWarmup: true,
