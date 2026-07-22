@@ -23,7 +23,10 @@ function encodeQueryPayload(payload) {
     }
     return encodedCategory;
   }
-  if (payload.productId != null) parts.push(encodeURIComponent(String(payload.productId)));
+  var entityId = payload.productId != null ? payload.productId
+    : payload.categoryId != null ? payload.categoryId
+      : payload.roomId != null ? payload.roomId : payload.unit;
+  if (entityId != null) parts.push(encodeURIComponent(String(entityId)));
   if (payload.quantity != null) {
     if (!Number.isInteger(payload.quantity) || payload.quantity <= 0) {
       throw new TypeError('Zalo query payload quantity must be a positive integer');
@@ -73,6 +76,16 @@ function decodeQueryPayload(value) {
     if (!productId) throw new Error('select_category query payload requires categoryId');
     if (parts.length > 2) throw new Error('Invalid select_category Zalo query payload');
     return { action: action, categoryId: productId };
+  }
+  if (action === 'select_unit') {
+    if ((productId !== 'hourly' && productId !== 'nightly') || parts.length !== 2) {
+      throw new Error('select_unit query payload requires hourly or nightly unit');
+    }
+    return { action: action, unit: productId };
+  }
+  if (action === 'select_room') {
+    if (!productId || parts.length !== 2) throw new Error('select_room query payload requires roomId');
+    return { action: action, roomId: productId };
   }
   if (parts.length > 1) throw new Error('Zalo query action does not accept arguments: ' + action);
   return { action: action };

@@ -39,6 +39,24 @@ function operationsOrderText(order, sourcePlatform) {
   ].filter(function (line) { return line !== null; }).join('\n');
 }
 
+function operationsBookingText(booking, sourcePlatform) {
+  var timing = booking.unit === 'hourly'
+    ? 'Khung giờ: ' + booking.startAt + ' — ' + booking.durationHours + 'h'
+    : 'Nhận phòng: ' + booking.startAt + ' — ' + booking.nights + ' đêm';
+  return [
+    '🔔 ĐẶT PHÒNG MỚI #' + booking.bookingId,
+    'Kênh: ' + sourcePlatform,
+    booking.customerName ? 'Khách: ' + booking.customerName : null,
+    '',
+    'Phòng: ' + booking.roomName + (booking.roomType ? ' (' + booking.roomType + ')' : ''),
+    timing,
+    'Tổng: ' + formatVndForOps(booking.totalAmount),
+    'Trạng thái: Chờ thanh toán',
+    '',
+    'Khi xác nhận, gõ: /thanhtoan ' + booking.bookingId
+  ].filter(function (line) { return line !== null; }).join('\n');
+}
+
 // Best-effort: a missing TELEGRAM_OPERATIONS_CHAT_ID or a failed Telegram
 // send must never fail the customer-facing order confirmation. Errors are
 // logged, not thrown.
@@ -71,6 +89,32 @@ function notifyStaffOfNewOrder(order, sourcePlatform, errorLogRepository) {
   }
 }
 
+function notifyStaffOfNewBooking(booking, sourcePlatform, errorLogRepository) {
+  var chatId = operationsChatId();
+  if (!chatId) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(JSON.stringify({ event: 'operations_notify_skipped', reason: 'not_configured', bookingId: booking.bookingId }));
+    }
+    return false;
+  }
+  try {
+    TelegramClient.create().execute({
+      method: 'sendMessage', params: { chat_id: chatId, text: operationsBookingText(booking, sourcePlatform) }
+    });
+    return true;
+  } catch (error) {
+    try {
+      (errorLogRepository || SheetErrorLogRepository()).log({
+        timestamp: new Date().toISOString(),
+        context: { stage: 'operations_booking_notify', bookingId: booking.bookingId, sourcePlatform: sourcePlatform },
+        message: error && error.message ? error.message : String(error),
+        stack: error && error.stack ? error.stack : ''
+      });
+    } catch (ignore) {}
+    return false;
+  }
+}
+
 function isAuthorizedOpsAdmin(userId) {
   var raw = PropertiesService.getScriptProperties().getProperty('TELEGRAM_ADMIN_USER_IDS');
   if (!raw) {
@@ -86,7 +130,9 @@ function isAuthorizedOpsAdmin(userId) {
 var OperationsNotifier = Object.freeze({
   operationsChatId: operationsChatId,
   operationsOrderText: operationsOrderText,
+  operationsBookingText: operationsBookingText,
   notifyStaffOfNewOrder: notifyStaffOfNewOrder,
+  notifyStaffOfNewBooking: notifyStaffOfNewBooking,
   isAuthorizedOpsAdmin: isAuthorizedOpsAdmin
 });
 

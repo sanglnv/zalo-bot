@@ -10,6 +10,7 @@ const TelegramClient = require('../../adapters/telegram/TelegramClient.gs');
 const RealPaymentQrDispatch = require('../../admin/PaymentQrDispatch.gs');
 const { mapInboundMessage } = require('../../adapters/telegram/mapInboundMessage');
 const { renderOutboundMessage } = require('../../adapters/telegram/renderOutboundMessage');
+const { routeToService } = require('../../adapters/routeToService');
 
 function requireGasFresh(path) {
   delete require.cache[require.resolve(path)];
@@ -84,6 +85,9 @@ function setup(setupOptions = {}) {
     parseThanhToanCommand: RealPaymentQrDispatch.parseThanhToanCommand,
     dispatchPaymentQr: setupOptions.dispatchPaymentQr || (() => ({ ok: false, reason: 'not_found' }))
   };
+  global.BookingQrDispatch = {
+    dispatchBookingQr: setupOptions.dispatchBookingQr || (() => ({ ok: false, reason: 'not_found' }))
+  };
   const { TelegramWebhook } = requireGasFresh('../../adapters/telegram/webhook.gs');
 
   const orderRepository = {
@@ -138,12 +142,17 @@ function setup(setupOptions = {}) {
   const orderService = {
     handleMessage(message) { handleCount += 1; return coreService.handleMessage(message); }
   };
+  const bookingService = setupOptions.bookingService || { handleMessage: () => [{ type: 'text', content: { text: 'booking' } }] };
   const webhook = TelegramWebhook.create({
     mapInboundMessage,
     renderOutboundMessage,
     withLock: lockSupport.withScriptLock,
     now: () => new Date('2026-07-13T10:00:00.000Z'),
     orderService,
+    bookingService,
+    customerRepository,
+    conversationStateRepository,
+    routeToService,
     processedUpdateRepository: {
       has: (updateId) => processed.has(String(updateId)),
       markProcessed(updateId) { processed.set(String(updateId), 'pending'); return true; },
@@ -378,6 +387,24 @@ test('/thanhtoan in the ops chat dispatches the QR and never reaches OrderServic
   assert.match(reply.params.text, /Đã gửi QR thanh toán cho đơn HD1/);
 });
 
+test('/thanhtoan falls back to the booking QR dispatcher after an unknown order id', () => {
+  let bookingId = null;
+  const f = setup({ opsChatId: 'ops-1', adminUserIds: '999',
+    dispatchPaymentQr: () => ({ ok: false, reason: 'not_found' }),
+    dispatchBookingQr: (id) => { bookingId = id; return { ok: true, dispatchResults: [] }; }
+  });
+  f.post(opsMessage(6001, '/thanhtoan B1', 'ops-1'));
+  assert.equal(bookingId, 'B1');
+  assert.match(f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text, /QR thanh toán cho đặt phòng B1/);
+});
+
+test('/thanhtoan reports a clear not-found reply when neither order nor booking exists', () => {
+  const f = setup({ opsChatId: 'ops-1', adminUserIds: '999',
+    dispatchPaymentQr: () => ({ ok: false, reason: 'not_found' }), dispatchBookingQr: () => ({ ok: false, reason: 'not_found' }) });
+  f.post(opsMessage(6002, '/thanhtoan UNKNOWN', 'ops-1'));
+  assert.match(f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text, /Không tìm thấy đơn hoặc đặt phòng UNKNOWN/);
+});
+
 test('/thanhtoan without an orderId replies with usage instead of silently failing', () => {
   const f = setup({ opsChatId: 'ops-1', adminUserIds: '999' });
   f.post(opsMessage(601, '/thanhtoan', 'ops-1'));
@@ -395,7 +422,7 @@ test('/thanhtoan reports not_found and already_resolved distinctly', () => {
   notFound.post(opsMessage(602, '/thanhtoan HD-missing', 'ops-1'));
   assert.match(
     notFound.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
-    /Không tìm thấy đơn HD-missing/
+    /Không tìm thấy đơn hoặc đặt phòng HD-missing/
   );
 
   const resolved = setup({

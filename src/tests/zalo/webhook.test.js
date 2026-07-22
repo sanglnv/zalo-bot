@@ -7,6 +7,7 @@ require.extensions['.gs'] = require.extensions['.js'];
 const OrderService = require('../../core/orderService');
 const { mapInboundMessage } = require('../../adapters/zalo/mapInboundMessage');
 const { renderOutboundMessage } = require('../../adapters/zalo/renderOutboundMessage');
+const { routeToService } = require('../../adapters/routeToService');
 
 function requireGasFresh(path) {
   delete require.cache[require.resolve(path)];
@@ -71,6 +72,21 @@ function setup(setupOptions = {}) {
     customerId: 'seed-customer', phone: null, displayName: 'Test Customer',
     platformLinks: [{ platform: 'zalo', platformUserId: 'u1' }]
   });
+  const bookingService = setupOptions.bookingService || { handleMessage: () => [{ type: 'text', content: { text: 'booking' } }] };
+  const customerRepository = {
+    save(customer) {
+      const index = customers.findIndex((x) => x.customerId === customer.customerId);
+      if (index < 0) customers.push(structuredClone(customer));
+      else customers[index] = structuredClone(customer);
+      return customer;
+    },
+    findById: (customerId) => customers.find((x) => x.customerId === customerId) || null,
+    findByPlatformUserId: (platform, userId) => customers.find((x) => x.platformLinks.some((l) => l.platform === platform && l.platformUserId === userId)) || null
+  };
+  const conversationStateRepository = {
+    get: (customerId) => states.get(customerId) || null,
+    set(customerId, state) { states.set(customerId, structuredClone(state)); return state; }
+  };
   const webhook = ZaloWebhook.create({
     mapInboundMessage,
     renderOutboundMessage,
@@ -78,6 +94,10 @@ function setup(setupOptions = {}) {
     withLock: (operation) => operation(),
     now: () => new Date('2026-07-14T00:00:00.000Z'),
     orderService: { handleMessage(message) { handleCount += 1; return service.handleMessage(message); } },
+    bookingService,
+    customerRepository,
+    conversationStateRepository,
+    routeToService,
     processedUpdateRepository: {
       has: (key) => processed.has(key),
       markProcessed(key) { processed.set(key, 'pending'); },
@@ -91,8 +111,39 @@ function setup(setupOptions = {}) {
     const body = { app_id: 'app', timestamp: '1', event_name: 'user_send_text', sender: { id: 'u1' }, message: { msg_id: messageId, text } };
     return webhook.doPost({ headers: { 'X-ZEvent-Signature': mac }, postData: { contents: JSON.stringify(body) } });
   }
-  return { webhook, post, errors, calls, processed, orders, opsFetchCalls, getHandleCount: () => handleCount };
+  return { webhook, post, errors, calls, processed, orders, states, opsFetchCalls, getHandleCount: () => handleCount };
 }
+
+test('Zalo booking query payloads round-trip with the shared action contract', () => {
+  const mapper = require('../../adapters/zalo/mapInboundMessage');
+  assert.equal(mapper.encodeQueryPayload({ action: 'select_unit', unit: 'hourly' }), 'zc:select_unit:hourly');
+  assert.deepEqual(mapper.decodeQueryPayload('zc:select_unit:nightly'), { action: 'select_unit', unit: 'nightly' });
+  assert.deepEqual(mapper.decodeQueryPayload('zc:select_room:R1'), { action: 'select_room', roomId: 'R1' });
+  assert.deepEqual(mapper.decodeQueryPayload('zc:confirm_booking'), { action: 'confirm_booking' });
+});
+
+test('Zalo routes /phong and active booking callbacks to booking service and notifies ops once', () => {
+  const received = [];
+  const bookingService = { handleMessage(inbound) {
+    received.push(inbound.payload ? inbound.payload.action : inbound.text);
+    if (inbound.payload && inbound.payload.action === 'confirm_booking') return [{ type: 'text', content: {
+      text: 'confirmed', bookingId: 'B1', amount: 150000, roomName: 'Box 1', roomType: 'single',
+      unit: 'hourly', startAt: '2026-08-01T10:00:00Z', durationHours: 3
+    } }];
+    return [{ type: 'text', content: { text: 'booking' } }];
+  } };
+  const f = setup({ opsChatId: 'ops-1', bookingService });
+  f.post('b1', '/phong');
+  f.states.set('seed-customer', { customerId: 'seed-customer', currentState: 'CONFIRMING',
+    contextData: { activeFlow: 'booking' } });
+  f.post('b2', 'zc:select_unit:hourly');
+  f.post('b3', 'zc:confirm_booking');
+  f.post('b3', 'zc:confirm_booking');
+  assert.deepEqual(received, ['/phong', 'select_unit', 'confirm_booking']);
+  assert.equal(f.opsFetchCalls.length, 1);
+  assert.match(f.opsFetchCalls[0].params.text, /ĐẶT PHÒNG MỚI #B1/);
+  assert.match(f.opsFetchCalls[0].params.text, /Kênh: zalo/);
+});
 
 test('end-to-end catalog to confirmation uses normal Zalo Send API and dedupes msg_id', () => {
   const f = setup();

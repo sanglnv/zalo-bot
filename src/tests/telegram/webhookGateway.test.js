@@ -57,6 +57,7 @@ test('registerWebhook requires and registers the Cloudflare gateway', () => {
         commands: [
           { command: 'batdau', description: 'Bắt đầu đặt món' },
           { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+          { command: 'phong', description: 'Đặt phòng sleepbox' },
           { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
           { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
           { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },
@@ -72,6 +73,7 @@ test('registerWebhook requires and registers the Cloudflare gateway', () => {
         commands: [
           { command: 'batdau', description: 'Bắt đầu đặt món' },
           { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+          { command: 'phong', description: 'Đặt phòng sleepbox' },
           { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
           { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
           { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },

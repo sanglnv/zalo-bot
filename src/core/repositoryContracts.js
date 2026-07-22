@@ -2,6 +2,8 @@
 
 var RepositoryContracts = Object.freeze({
   order: Object.freeze(['save', 'findById', 'findByCustomerId', 'updateStatus']),
+  room: Object.freeze(['list', 'findById']),
+  booking: Object.freeze(['save', 'findById', 'findByCustomerId', 'updateStatus', 'findOverlapping']),
   customer: Object.freeze(['save', 'findById', 'findByPlatformUserId']),
   conversationState: Object.freeze(['get', 'set'])
 });

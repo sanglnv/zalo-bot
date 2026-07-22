@@ -255,7 +255,7 @@ test('cancelled, expired, and paid customers can start a clean new session', () 
   cancelled.send('catalog');
   let state = [...cancelled.states.values()][0];
   assert.equal(state.currentState, 'BROWSING');
-  assert.deepEqual(state.contextData, { cart: [] });
+  assert.deepEqual(state.contextData, { cart: [], activeFlow: 'order' });
 
   const paid = fixture();
   const orderId = createAwaitingPaymentOrder(paid);
@@ -263,7 +263,7 @@ test('cancelled, expired, and paid customers can start a clean new session', () 
   paid.send('', { action: 'new_order' });
   state = [...paid.states.values()][0];
   assert.equal(state.currentState, 'BROWSING');
-  assert.deepEqual(state.contextData, { cart: [] });
+  assert.deepEqual(state.contextData, { cart: [], activeFlow: 'order' });
 });
 
 test('awaiting-payment actions return status and QR instead of transition errors', () => {

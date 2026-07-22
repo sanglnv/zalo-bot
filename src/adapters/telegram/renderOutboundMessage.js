@@ -11,6 +11,8 @@ function buttonPayload(button) {
   if (button.productId != null) payload.productId = button.productId;
   if (button.categoryId != null) payload.categoryId = button.categoryId;
   if (button.quantity != null) payload.quantity = button.quantity;
+  if (button.roomId != null) payload.roomId = button.roomId;
+  if (button.unit != null) payload.unit = button.unit;
   return payload;
 }
 
@@ -45,6 +47,15 @@ function renderOutboundMessage(message, chatId, inboundMapper) {
         text: typeof content.title === 'string' ? content.title : 'Danh mục món',
         reply_markup: {
           inline_keyboard: content.items.map(function (product) {
+            if (product.roomId != null) {
+              var prices = [];
+              if (Number.isFinite(product.pricePerHour)) prices.push(formatPrice(product.pricePerHour) + '/giờ');
+              if (Number.isFinite(product.pricePerNight)) prices.push(formatPrice(product.pricePerNight) + '/đêm');
+              return [{
+                text: product.name + (prices.length ? ' — ' + prices.join(' · ') : ''),
+                callback_data: mapper.encodeCallbackData({ action: 'select_room', roomId: product.roomId })
+              }];
+            }
             return [{
               text: product.name + ' — ' + formatPrice(product.price),
               callback_data: mapper.encodeCallbackData({

@@ -14,6 +14,8 @@ function queryButton(button) {
       action: button.action || 'add_item',
       productId: button.productId,
       categoryId: button.categoryId,
+      roomId: button.roomId,
+      unit: button.unit,
       quantity: button.quantity
     })
   };
@@ -37,6 +39,15 @@ function renderOutboundMessage(message, userId) {
       payload: {
         template_type: 'list',
         elements: content.items.map(function (product) {
+          if (product.roomId != null) {
+            return {
+              title: product.name,
+              subtitle: [product.pricePerHour != null ? String(product.pricePerHour) + '/giờ' : null,
+                product.pricePerNight != null ? String(product.pricePerNight) + '/đêm' : null]
+                .filter(Boolean).join(' · '),
+              default_action: queryButton({ label: product.name, action: 'select_room', roomId: product.roomId })
+            };
+          }
           return {
             title: product.name,
             subtitle: String(product.price),

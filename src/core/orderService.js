@@ -152,7 +152,7 @@ function createOrderService(dependencies) {
     return persistState({
       customerId: state.customerId,
       currentState: result.nextState,
-      contextData: { cart: [] },
+      contextData: { cart: [], activeFlow: 'order' },
       updatedAt: dependencies.now().toISOString()
     });
   }

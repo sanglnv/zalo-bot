@@ -59,6 +59,12 @@ test('compact callback encoding round-trips and defaults missing quantity to one
   assert.deepEqual(decodeCallbackData('admin_category:CAT_TEA'), {
     action: 'admin_category', categoryId: 'CAT_TEA'
   });
+  assert.equal(encodeCallbackData({ action: 'select_unit', unit: 'hourly' }), 'select_unit:hourly');
+  assert.deepEqual(decodeCallbackData('select_unit:nightly'), { action: 'select_unit', unit: 'nightly' });
+  assert.equal(encodeCallbackData({ action: 'select_room', roomId: 'SB:01' }), 'select_room:SB%3A01');
+  assert.deepEqual(decodeCallbackData('select_room:SB%3A01'), { action: 'select_room', roomId: 'SB:01' });
+  assert.deepEqual(decodeCallbackData('confirm_booking'), { action: 'confirm_booking' });
+  assert.deepEqual(decodeCallbackData('cancel_booking'), { action: 'cancel_booking' });
 });
 
 test('enforces callback_data validation and 64-byte limit', () => {

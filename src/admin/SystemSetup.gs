@@ -28,6 +28,9 @@ var SystemSetup = (function () {
   // live compatibility mirror for FastPathSync and FastPathPaymentClient.
   var SHEETS = [
     ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson', 'memberId']],
+    ['Rooms', ['roomId', 'name', 'roomType', 'pricePerHour', 'pricePerNight', 'isAvailable']],
+    ['Bookings', ['bookingId', 'customerId', 'memberId', 'roomId', 'unit', 'startAt',
+      'durationHours', 'nights', 'status', 'totalAmount', 'createdAt', 'updatedAt']],
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],
     ['ProcessedUpdates', ['updateId', 'processedAt', 'deliveryStatus']],
     ['FastPathSyncedUpdates', ['updateId', 'syncedAt']],

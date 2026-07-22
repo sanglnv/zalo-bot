@@ -60,6 +60,20 @@ test('renders category navigation below a product list', () => {
   ]);
 });
 
+test('renders booking unit buttons and room lists with compact callback data', () => {
+  const units = renderOutboundMessage({ type: 'button', content: { text: 'Loại hình', buttons: [
+    { action: 'select_unit', unit: 'hourly', label: 'Theo giờ' },
+    { action: 'select_unit', unit: 'nightly', label: 'Theo đêm' }
+  ] } }, '10');
+  assert.deepEqual(units.params.reply_markup.inline_keyboard[0].map((button) => button.callback_data),
+    ['select_unit:hourly', 'select_unit:nightly']);
+  const rooms = renderOutboundMessage({ type: 'list', content: { title: 'Phòng trống', items: [
+    { roomId: 'R1', name: 'Box 1', pricePerHour: 50000, pricePerNight: 300000 }
+  ] } }, '10');
+  assert.equal(rooms.params.reply_markup.inline_keyboard[0][0].callback_data, 'select_room:R1');
+  assert.match(rooms.params.reply_markup.inline_keyboard[0][0].text, /50\.000 ₫\/giờ/);
+});
+
 test('renders a direct QR URL as sendPhoto', () => {
   assert.deepEqual(renderOutboundMessage({
     type: 'image', content: { data: 'https://img.vietqr.io/image/demo.png' }

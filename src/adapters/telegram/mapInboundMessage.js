@@ -14,7 +14,7 @@ function telegramCallbackByteLength(value) {
  * Encode a compact callback payload. Components are URI encoded so IDs may
  * safely contain separators while the final value remains under Telegram's
  * 64-byte callback_data limit.
- * @param {{action: string, productId?: string, categoryId?: string, quantity?: number}} payload
+ * @param {{action: string, productId?: string, categoryId?: string, roomId?: string, unit?: string, quantity?: number}} payload
  * @returns {string}
  */
 function encodeCallbackData(payload) {
@@ -22,7 +22,9 @@ function encodeCallbackData(payload) {
     throw new TypeError('callback payload action must be a non-empty string');
   }
   var parts = [encodeURIComponent(payload.action)];
-  var entityId = payload.productId != null ? payload.productId : payload.categoryId;
+  var entityId = payload.productId != null ? payload.productId
+    : payload.categoryId != null ? payload.categoryId
+      : payload.roomId != null ? payload.roomId : payload.unit;
   if (entityId != null) parts.push(encodeURIComponent(String(entityId)));
   if (payload.quantity != null) {
     if (!Number.isInteger(payload.quantity) || payload.quantity <= 0) {
@@ -72,6 +74,16 @@ function decodeCallbackData(data) {
   if (action === 'view_product') {
     if (!productId || parts.length !== 2) throw new Error('view_product callback_data requires productId');
     return { action: action, productId: productId };
+  }
+  if (action === 'select_unit') {
+    if ((productId !== 'hourly' && productId !== 'nightly') || parts.length !== 2) {
+      throw new Error('select_unit callback_data requires hourly or nightly unit');
+    }
+    return { action: action, unit: productId };
+  }
+  if (action === 'select_room') {
+    if (!productId || parts.length !== 2) throw new Error('select_room callback_data requires roomId');
+    return { action: action, roomId: productId };
   }
   if (parts.length > 1) throw new Error('callback_data action does not accept arguments: ' + action);
   return { action: action };

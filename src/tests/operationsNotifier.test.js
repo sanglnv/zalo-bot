@@ -22,6 +22,24 @@ const sampleOrder = {
     { name: 'Trà', quantity: 1, unitPrice: 25000 }
   ]
 };
+const sampleBooking = { bookingId: 'B1', customerName: 'Sang', roomName: 'Box 1', roomType: 'single',
+  unit: 'hourly', startAt: '2026-08-01T10:00:00.000Z', durationHours: 3, totalAmount: 150000 };
+
+test('operationsBookingText contains room, time, total and /thanhtoan instruction', () => {
+  const notifier = loadModule({}, () => ({ execute() {} }));
+  const text = notifier.operationsBookingText(sampleBooking, 'telegram');
+  assert.match(text, /ĐẶT PHÒNG MỚI #B1/); assert.match(text, /Khách: Sang/);
+  assert.match(text, /Phòng: Box 1 \(single\)/); assert.match(text, /Khung giờ: .* — 3h/);
+  assert.match(text, /150\.000 đ/); assert.match(text, /\/thanhtoan B1/);
+});
+
+test('notifyStaffOfNewBooking is best-effort and records a booking notification failure', () => {
+  const skipped = loadModule({}, () => ({ execute() { throw new Error('must not send'); } }));
+  assert.equal(skipped.notifyStaffOfNewBooking(sampleBooking, 'telegram'), false);
+  const logs = []; const broken = loadModule({ TELEGRAM_OPERATIONS_CHAT_ID: 'ops' }, () => ({ execute() { throw new Error('down'); } }));
+  assert.equal(broken.notifyStaffOfNewBooking(sampleBooking, 'zalo', { log: (entry) => logs.push(entry) }), false);
+  assert.equal(logs[0].context.stage, 'operations_booking_notify');
+});
 
 test('operationsOrderText includes item breakdown, total, source platform, and the /thanhtoan instruction', () => {
   const OperationsNotifier = loadModule({}, () => ({ execute() {} }));

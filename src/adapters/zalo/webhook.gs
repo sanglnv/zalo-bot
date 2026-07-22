@@ -13,6 +13,12 @@ var ZaloWebhook = (function () {
     if (!dependencies.orderService || typeof dependencies.orderService.handleMessage !== 'function') {
       throw new TypeError('orderService.handleMessage is required');
     }
+    if (!dependencies.bookingService || typeof dependencies.bookingService.handleMessage !== 'function') {
+      throw new TypeError('bookingService.handleMessage is required');
+    }
+    if (!dependencies.customerRepository || typeof dependencies.customerRepository.findByPlatformUserId !== 'function' ||
+        !dependencies.conversationStateRepository || typeof dependencies.conversationStateRepository.get !== 'function' ||
+        typeof dependencies.routeToService !== 'function') throw new TypeError('service router dependencies are required');
     if (!dependencies.processedUpdateRepository ||
         typeof dependencies.processedUpdateRepository.has !== 'function' ||
         typeof dependencies.processedUpdateRepository.markProcessed !== 'function' ||
@@ -92,6 +98,13 @@ var ZaloWebhook = (function () {
         customerName: confirmation.content.customerName || ''
       };
     }
+    function confirmedBookingSummary(outbound, inbound) {
+      if (!inbound || !inbound.payload || inbound.payload.action !== 'confirm_booking') return null;
+      var confirmation = outbound.find(function (message) {
+        return message.type === 'text' && message.content && message.content.bookingId != null;
+      });
+      return confirmation ? confirmation.content : null;
+    }
 
     function doPost(event) {
       var rawBody = event && event.postData && event.postData.contents;
@@ -121,12 +134,16 @@ var ZaloWebhook = (function () {
           if (dependencies.processedUpdateRepository.has(messageId)) return { duplicate: true, commands: [] };
           dependencies.processedUpdateRepository.markProcessed(messageId, dependencies.now().toISOString());
           claimed = true;
-          var outbound = dependencies.orderService.handleMessage(inbound);
+          var selectedService = dependencies.routeToService({ orderService: dependencies.orderService,
+            bookingService: dependencies.bookingService, customerRepository: dependencies.customerRepository,
+            conversationStateRepository: dependencies.conversationStateRepository }, inbound);
+          var outbound = selectedService.handleMessage(inbound);
           return {
             commands: outbound.map(function (message) {
               return dependencies.renderOutboundMessage(message, inbound.platformUserId);
             }),
             confirmedOrderSummary: confirmedOrderSummary(outbound, inbound),
+            confirmedBookingSummary: confirmedBookingSummary(outbound, inbound),
             recovery: outbound.reduce(function (result, message) {
               if (message.type === 'image' && message.content && message.content.purpose === 'payment_qr') {
                 result.orderId = message.content.orderId || null;
@@ -142,6 +159,14 @@ var ZaloWebhook = (function () {
             totalAmount: transaction.confirmedOrderSummary.amount,
             items: transaction.confirmedOrderSummary.items,
             customerName: transaction.confirmedOrderSummary.customerName
+          }, 'zalo', dependencies.errorLogRepository);
+        }
+        if (!transaction.duplicate && transaction.confirmedBookingSummary) {
+          var booking = transaction.confirmedBookingSummary;
+          OperationsNotifier.notifyStaffOfNewBooking({ bookingId: String(booking.bookingId),
+            totalAmount: Number(booking.amount || 0), customerName: booking.customerName || '',
+            roomName: booking.roomName || '', roomType: booking.roomType || '', unit: booking.unit,
+            startAt: booking.startAt, durationHours: booking.durationHours, nights: booking.nights
           }, 'zalo', dependencies.errorLogRepository);
         }
         if (transaction.duplicate) return successResponse();
@@ -206,15 +231,27 @@ function zaloSha256Hex(value) {
 
 function createDefaultZaloWebhook() {
   var tokenManager = ZaloTokenManager.createDefault();
+  var customerRepository = SheetCustomerRepository();
+  var conversationStateRepository = SheetConversationStateRepository();
+  var memberRepository = MemberRepository();
   var orderService = OrderService.create({
     orderRepository: BotOrderRepository(),
-    customerRepository: SheetCustomerRepository(),
-    conversationStateRepository: SheetConversationStateRepository(),
-    memberRepository: MemberRepository(),
+    customerRepository: customerRepository, conversationStateRepository: conversationStateRepository,
+    memberRepository: memberRepository,
     getCatalog: ZaloRuntime.loadCatalog,
     createQrContent: ZaloRuntime.createPaymentQrUrl,
     createId: ZaloRuntime.createId,
     now: function () { return new Date(); },
+    withLock: SheetRepositorySupport.withScriptLock
+  });
+  var bookingService = BookingService.create({
+    bookingRepository: SheetBookingRepository(), roomRepository: SheetRoomRepository(),
+    customerRepository: customerRepository, conversationStateRepository: conversationStateRepository,
+    memberRepository: memberRepository,
+    createQrContent: function (booking) {
+      return ZaloRuntime.createPaymentQrUrl(Object.assign({}, booking, { orderId: booking.bookingId }));
+    },
+    createId: ZaloRuntime.createId, now: function () { return new Date(); },
     withLock: SheetRepositorySupport.withScriptLock
   });
   return ZaloWebhook.create({
@@ -228,6 +265,8 @@ function createDefaultZaloWebhook() {
     withLock: SheetRepositorySupport.withScriptLock,
     now: function () { return new Date(); },
     orderService: orderService,
+    bookingService: bookingService, customerRepository: customerRepository,
+    conversationStateRepository: conversationStateRepository, routeToService: ServiceRouter.routeToService,
     processedUpdateRepository: SheetZaloProcessedUpdateRepository(),
     errorLogRepository: SheetErrorLogRepository(),
     client: ZaloClient.create(tokenManager),

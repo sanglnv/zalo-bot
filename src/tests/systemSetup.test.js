@@ -78,10 +78,10 @@ test('setup creates every repository sheet and validates headers without sample 
   assert.equal(result.configuration.properties, 'ok');
   assert.equal(result.configuration.catalogProducts, 1);
   assert.deepEqual(result.sheets, [
-    'Customers', 'ConversationStates', 'ProcessedUpdates', 'FastPathSyncedUpdates',
+    'Customers', 'Rooms', 'Bookings', 'ConversationStates', 'ProcessedUpdates', 'FastPathSyncedUpdates',
     'FastPathSyncState', 'ZaloProcessedUpdates', 'ErrorLogs', 'OperationMetrics'
   ]);
-  assert.equal(created.length, 8);
+  assert.equal(created.length, 10);
 });
 
 test('health check exposes Telegram queue and last webhook error', () => {

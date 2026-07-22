@@ -21,6 +21,20 @@ var TelegramWebhook = (function () {
     if (!dependencies.orderService || typeof dependencies.orderService.handleMessage !== 'function') {
       throw new TypeError('orderService.handleMessage is required');
     }
+    if (!dependencies.bookingService || typeof dependencies.bookingService.handleMessage !== 'function') {
+      throw new TypeError('bookingService.handleMessage is required');
+    }
+    if (!dependencies.customerRepository ||
+        typeof dependencies.customerRepository.findByPlatformUserId !== 'function') {
+      throw new TypeError('customerRepository.findByPlatformUserId is required');
+    }
+    if (!dependencies.conversationStateRepository ||
+        typeof dependencies.conversationStateRepository.get !== 'function') {
+      throw new TypeError('conversationStateRepository.get is required');
+    }
+    if (typeof dependencies.routeToService !== 'function') {
+      throw new TypeError('routeToService must be a function');
+    }
     if (!dependencies.processedUpdateRepository ||
         typeof dependencies.processedUpdateRepository.has !== 'function' ||
         typeof dependencies.processedUpdateRepository.markProcessed !== 'function' ||
@@ -121,6 +135,16 @@ var TelegramWebhook = (function () {
         customerName: confirmation.content.customerName || ''
       };
     }
+    function confirmedBookingSummary(outbound, inbound) {
+      if (!inbound || !inbound.payload || inbound.payload.action !== 'confirm_booking') return null;
+      var confirmation = outbound.find(function (message) {
+        return message.type === 'text' && message.content && message.content.bookingId != null;
+      });
+      if (!confirmation) return null;
+      return Object.assign({}, confirmation.content, {
+        bookingId: String(confirmation.content.bookingId), amount: Number(confirmation.content.amount || 0)
+      });
+    }
 
     // Staff message in the ops chat, e.g. "/thanhtoan HD123". Handled
     // entirely outside orderService.handleMessage -- it's not a customer
@@ -163,9 +187,18 @@ var TelegramWebhook = (function () {
         return true;
       }
 
+      // Sheet-backed Phase 1 bookings use the same createId source as orders,
+      // so there is no safe prefix distinction. Try the order store first,
+      // then the booking store only when it is not found. Phase 5 may replace
+      // this fallback if the POS guarantees distinct ID prefixes.
       var result;
+      var kind = 'đơn';
       try {
         result = PaymentQrDispatch.dispatchPaymentQr(parsed);
+        if (!result.ok && result.reason === 'not_found') {
+          result = BookingQrDispatch.dispatchBookingQr(parsed);
+          kind = 'đặt phòng';
+        }
       } catch (error) {
         logError(error, { updateId: updateId, stage: 'ops_command_dispatch', orderId: parsed });
         reply('Có lỗi xảy ra khi gửi QR cho đơn ' + parsed + '.');
@@ -173,11 +206,11 @@ var TelegramWebhook = (function () {
         return true;
       }
       if (result.ok) {
-        reply('Đã gửi QR thanh toán cho đơn ' + parsed + '.');
+        reply('Đã gửi QR thanh toán cho ' + kind + ' ' + parsed + '.');
       } else if (result.reason === 'not_found') {
-        reply('Không tìm thấy đơn ' + parsed + '.');
+        reply('Không tìm thấy đơn hoặc đặt phòng ' + parsed + '.');
       } else if (result.reason === 'already_resolved') {
-        reply('Đơn ' + parsed + ' không còn chờ thanh toán (trạng thái: ' + (result.status || '?') + ').');
+        reply(kind + ' ' + parsed + ' không còn chờ thanh toán (trạng thái: ' + (result.status || '?') + ').');
       } else {
         reply('Gửi QR cho đơn ' + parsed + ' thất bại: ' + (result.message || 'không xác định'));
       }
@@ -248,7 +281,9 @@ var TelegramWebhook = (function () {
       try {
         action = callback ? dependencies.mapInboundMessage(update).payload.action : null;
       } catch (ignore) {}
-      if (!message || message.message_id == null || (action !== 'confirm_order' && action !== 'cancel')) return;
+      if (!message || message.message_id == null ||
+          (action !== 'confirm_order' && action !== 'cancel' &&
+           action !== 'confirm_booking' && action !== 'cancel_booking')) return;
       try {
         dependencies.client.execute({
           method: 'editMessageReplyMarkup',
@@ -297,13 +332,20 @@ var TelegramWebhook = (function () {
           inbound.traceId = updateId;
           var domainStartedAtMs = Date.now();
           emitTelemetry('domain_started', updateId, null, { timestampMs: domainStartedAtMs });
-          var outbound = dependencies.orderService.handleMessage(inbound);
+          var selectedService = dependencies.routeToService({
+            orderService: dependencies.orderService,
+            bookingService: dependencies.bookingService,
+            customerRepository: dependencies.customerRepository,
+            conversationStateRepository: dependencies.conversationStateRepository
+          }, inbound);
+          var outbound = selectedService.handleMessage(inbound);
           emitTelemetry('domain_completed', updateId, domainStartedAtMs, {
             outboundCount: outbound.length
           });
           return {
             recovery: recoveryFrom(outbound, inbound.platformUserId),
             confirmedOrderSummary: confirmedOrderSummary(outbound, inbound),
+            confirmedBookingSummary: confirmedBookingSummary(outbound, inbound),
             commands: outbound.map(function (message) {
               return dependencies.renderOutboundMessage(message, inbound.platformUserId);
             })
@@ -320,6 +362,19 @@ var TelegramWebhook = (function () {
             totalAmount: transaction.confirmedOrderSummary.amount,
             items: transaction.confirmedOrderSummary.items,
             customerName: transaction.confirmedOrderSummary.customerName
+          }, 'telegram', dependencies.errorLogRepository);
+        }
+        if (!transaction.duplicate && transaction.confirmedBookingSummary) {
+          OperationsNotifier.notifyStaffOfNewBooking({
+            bookingId: transaction.confirmedBookingSummary.bookingId,
+            totalAmount: transaction.confirmedBookingSummary.amount,
+            customerName: transaction.confirmedBookingSummary.customerName || '',
+            roomName: transaction.confirmedBookingSummary.roomName || '',
+            roomType: transaction.confirmedBookingSummary.roomType || '',
+            unit: transaction.confirmedBookingSummary.unit,
+            startAt: transaction.confirmedBookingSummary.startAt,
+            durationHours: transaction.confirmedBookingSummary.durationHours,
+            nights: transaction.confirmedBookingSummary.nights
           }, 'telegram', dependencies.errorLogRepository);
         }
 
@@ -394,11 +449,14 @@ function createDefaultTelegramWebhook() {
       }, details || {})));
     }
   }
+  var customerRepository = SheetCustomerRepository();
+  var conversationStateRepository = SheetConversationStateRepository();
+  var memberRepository = MemberRepository();
   var orderService = OrderService.create({
     orderRepository: BotOrderRepository(),
-    customerRepository: SheetCustomerRepository(),
-    conversationStateRepository: SheetConversationStateRepository(),
-    memberRepository: MemberRepository(),
+    customerRepository: customerRepository,
+    conversationStateRepository: conversationStateRepository,
+    memberRepository: memberRepository,
     getCatalog: TelegramRuntime.loadCatalog,
     createQrContent: TelegramRuntime.createPaymentQrUrl,
     createId: TelegramRuntime.createId,
@@ -406,12 +464,29 @@ function createDefaultTelegramWebhook() {
     withLock: SheetRepositorySupport.withScriptLock,
     telemetry: structuredTelemetry
   });
+  var bookingService = BookingService.create({
+    bookingRepository: SheetBookingRepository(),
+    roomRepository: SheetRoomRepository(),
+    customerRepository: customerRepository,
+    conversationStateRepository: conversationStateRepository,
+    memberRepository: memberRepository,
+    createQrContent: function (booking) {
+      return TelegramRuntime.createPaymentQrUrl(Object.assign({}, booking, { orderId: booking.bookingId }));
+    },
+    createId: TelegramRuntime.createId,
+    now: function () { return new Date(); },
+    withLock: SheetRepositorySupport.withScriptLock
+  });
   return TelegramWebhook.create({
     mapInboundMessage: TelegramInboundMapper.mapInboundMessage,
     renderOutboundMessage: TelegramOutboundRenderer.renderOutboundMessage,
     withLock: SheetRepositorySupport.withScriptLock,
     now: function () { return new Date(); },
     orderService: orderService,
+    bookingService: bookingService,
+    customerRepository: customerRepository,
+    conversationStateRepository: conversationStateRepository,
+    routeToService: ServiceRouter.routeToService,
     processedUpdateRepository: SheetProcessedUpdateRepository(),
     errorLogRepository: SheetErrorLogRepository(),
     client: TelegramClient.create(),
@@ -463,6 +538,7 @@ function registerWebhook(dropPendingUpdates) {
   var vietnameseCommands = [
     { command: 'batdau', description: 'Bắt đầu đặt món' },
     { command: 'danhmuc', description: 'Xem danh mục món đang bán' },
+    { command: 'phong', description: 'Đặt phòng sleepbox' },
     { command: 'giohang', description: 'Xem giỏ hàng hiện tại' },
     { command: 'dathang', description: 'Kiểm tra và xác nhận giỏ hàng' },
     { command: 'xemdon', description: 'Xem trạng thái đơn gần nhất' },
