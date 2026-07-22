@@ -28,9 +28,14 @@ var SystemSetup = (function () {
   // live compatibility mirror for FastPathSync and FastPathPaymentClient.
   var SHEETS = [
     ['Customers', ['customerId', 'phone', 'displayName', 'platformLinksJson', 'memberId']],
-    ['Rooms', ['roomId', 'name', 'roomType', 'pricePerHour', 'pricePerNight', 'isAvailable']],
-    ['Bookings', ['bookingId', 'customerId', 'memberId', 'roomId', 'unit', 'startAt',
-      'durationHours', 'nights', 'status', 'totalAmount', 'createdAt', 'updatedAt']],
+    // Rooms/Bookings sheets are no longer read by the production Telegram/
+    // Zalo webhooks (PosRoomRepository/PosBookingRepository call the real
+    // POS SleepBox API instead, see src/repositories/Pos*Repository.gs) --
+    // kept provisioned for local/manual testing against
+    // SheetRoomRepository/SheetBookingRepository.
+    ['Rooms', ['roomId', 'name', 'roomType', 'hourlyRate', 'overnightRate', 'dailyRate', 'isAvailable']],
+    ['Bookings', ['bookingId', 'customerId', 'memberId', 'roomId', 'unit', 'startAt', 'endAt',
+      'durationHours', 'nights', 'status', 'totalAmount', 'confirmedAt', 'confirmedBy', 'createdAt', 'updatedAt']],
     ['ConversationStates', ['customerId', 'currentState', 'contextDataJson', 'updatedAt']],
     ['ProcessedUpdates', ['updateId', 'processedAt', 'deliveryStatus']],
     ['FastPathSyncedUpdates', ['updateId', 'syncedAt']],

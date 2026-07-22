@@ -5,7 +5,7 @@ require.extensions['.gs'] = require.extensions['.js'];
 
 function load(options = {}) {
   global.BookingService = { create: () => ({ sendPaymentQr: options.sendPaymentQr }) };
-  global.SheetBookingRepository = () => ({}); global.SheetRoomRepository = () => ({});
+  global.PosBookingRepository = () => ({}); global.PosRoomRepository = () => ({});
   global.SheetCustomerRepository = () => ({}); global.SheetConversationStateRepository = () => ({});
   global.MemberRepository = () => ({});
   global.TelegramRuntime = { createPaymentQrUrl: () => '', createId: () => 'id' };
@@ -24,7 +24,7 @@ test('dispatchBookingQr sends generated QR', () => {
 test('booking QR builder uses bookingId as the VietQR payment reference', () => {
   let qrInput = null;
   global.BookingService = { create: (dependencies) => { qrInput = dependencies.createQrContent({ bookingId: 'B9', totalAmount: 1 }); return {}; } };
-  global.SheetBookingRepository = () => ({}); global.SheetRoomRepository = () => ({});
+  global.PosBookingRepository = () => ({}); global.PosRoomRepository = () => ({});
   global.SheetCustomerRepository = () => ({}); global.SheetConversationStateRepository = () => ({}); global.MemberRepository = () => ({});
   global.TelegramRuntime = { createPaymentQrUrl: (value) => { assert.equal(value.orderId, 'B9'); return 'qr'; }, createId: () => 'id' };
   global.SheetRepositorySupport = { withScriptLock: (fn) => fn() };

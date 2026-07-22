@@ -2,21 +2,22 @@
 
 function SheetBookingRepository() {
   var SHEET = 'Bookings';
-  var HEADERS = ['bookingId', 'customerId', 'memberId', 'roomId', 'unit', 'startAt',
-    'durationHours', 'nights', 'status', 'totalAmount', 'createdAt', 'updatedAt'];
+  var HEADERS = ['bookingId', 'customerId', 'memberId', 'roomId', 'unit', 'startAt', 'endAt',
+    'durationHours', 'nights', 'status', 'totalAmount', 'confirmedAt', 'confirmedBy', 'createdAt', 'updatedAt'];
 
   function fromRow(row) {
     return { bookingId: String(row[0]), customerId: String(row[1]), memberId: row[2] ? String(row[2]) : null,
-      roomId: String(row[3]), unit: String(row[4]), startAt: String(row[5]),
-      durationHours: row[6] === '' || row[6] == null ? undefined : Number(row[6]),
-      nights: row[7] === '' || row[7] == null ? undefined : Number(row[7]), status: String(row[8]),
-      totalAmount: Number(row[9]), createdAt: String(row[10]), updatedAt: String(row[11]) };
+      roomId: String(row[3]), unit: String(row[4]), startAt: String(row[5]), endAt: row[6] ? String(row[6]) : undefined,
+      durationHours: row[7] === '' || row[7] == null ? undefined : Number(row[7]),
+      nights: row[8] === '' || row[8] == null ? undefined : Number(row[8]), status: String(row[9]),
+      totalAmount: Number(row[10]), confirmedAt: row[11] ? String(row[11]) : undefined,
+      confirmedBy: row[12] ? String(row[12]) : undefined, createdAt: String(row[13]), updatedAt: String(row[14]) };
   }
   function values(booking) {
     return [booking.bookingId, booking.customerId, booking.memberId || '', booking.roomId, booking.unit,
-      booking.startAt, booking.durationHours == null ? '' : booking.durationHours,
+      booking.startAt, booking.endAt || '', booking.durationHours == null ? '' : booking.durationHours,
       booking.nights == null ? '' : booking.nights, booking.status, booking.totalAmount,
-      booking.createdAt, booking.updatedAt];
+      booking.confirmedAt || '', booking.confirmedBy || '', booking.createdAt, booking.updatedAt];
   }
   function save(booking) {
     return SheetRepositorySupport.withScriptLock(function () {
@@ -41,8 +42,8 @@ function SheetBookingRepository() {
       var all = SheetRepositorySupport.rows(sheet);
       var index = all.findIndex(function (row) { return String(row[0]) === String(bookingId); });
       if (index < 0) throw new Error('Booking not found: ' + bookingId);
-      sheet.getRange(index + 2, 9).setValue(status);
-      sheet.getRange(index + 2, 12).setValue(new Date().toISOString());
+      sheet.getRange(index + 2, 10).setValue(status);
+      sheet.getRange(index + 2, 15).setValue(new Date().toISOString());
       return true;
     });
   }

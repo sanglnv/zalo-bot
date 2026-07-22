@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { calculateBookingBill, findAvailableRooms } = require('../core/bookingBilling');
-const room = { roomId: 'R1', pricePerHour: 100.25, pricePerNight: 500.4, isAvailable: true };
+const room = { roomId: 'R1', hourlyRate: 100.25, overnightRate: 500.4, isAvailable: true };
 test('calculates hourly/nightly bills and rounds total immediately', () => {
   assert.deepEqual(calculateBookingBill(room, 'hourly', 3), { subtotal: 300.75, totalAmount: 301 });
   assert.deepEqual(calculateBookingBill(room, 'nightly', 2), { subtotal: 1000.8, totalAmount: 1001 });

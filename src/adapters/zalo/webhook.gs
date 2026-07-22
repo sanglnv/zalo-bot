@@ -245,7 +245,7 @@ function createDefaultZaloWebhook() {
     withLock: SheetRepositorySupport.withScriptLock
   });
   var bookingService = BookingService.create({
-    bookingRepository: SheetBookingRepository(), roomRepository: SheetRoomRepository(),
+    bookingRepository: PosBookingRepository(customerRepository), roomRepository: PosRoomRepository(),
     customerRepository: customerRepository, conversationStateRepository: conversationStateRepository,
     memberRepository: memberRepository,
     createQrContent: function (booking) {

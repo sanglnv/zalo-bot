@@ -187,18 +187,16 @@ var TelegramWebhook = (function () {
         return true;
       }
 
-      // Sheet-backed Phase 1 bookings use the same createId source as orders,
-      // so there is no safe prefix distinction. Try the order store first,
-      // then the booking store only when it is not found. Phase 5 may replace
-      // this fallback if the POS guarantees distinct ID prefixes.
+      // The POS assigns distinct id prefixes per contract (orders "HD...",
+      // bookings "BOOKING_..."), so the id itself says which store to hit --
+      // no more try-order-then-booking fallback (Phase 1-4's Sheet-backed
+      // ids came from the same createId() source and were not
+      // distinguishable this way).
+      var isBookingId = /^BOOKING_/.test(parsed);
       var result;
-      var kind = 'đơn';
+      var kind = isBookingId ? 'đặt phòng' : 'đơn';
       try {
-        result = PaymentQrDispatch.dispatchPaymentQr(parsed);
-        if (!result.ok && result.reason === 'not_found') {
-          result = BookingQrDispatch.dispatchBookingQr(parsed);
-          kind = 'đặt phòng';
-        }
+        result = isBookingId ? BookingQrDispatch.dispatchBookingQr(parsed) : PaymentQrDispatch.dispatchPaymentQr(parsed);
       } catch (error) {
         logError(error, { updateId: updateId, stage: 'ops_command_dispatch', orderId: parsed });
         reply('Có lỗi xảy ra khi gửi QR cho đơn ' + parsed + '.');
@@ -465,8 +463,8 @@ function createDefaultTelegramWebhook() {
     telemetry: structuredTelemetry
   });
   var bookingService = BookingService.create({
-    bookingRepository: SheetBookingRepository(),
-    roomRepository: SheetRoomRepository(),
+    bookingRepository: PosBookingRepository(customerRepository),
+    roomRepository: PosRoomRepository(),
     customerRepository: customerRepository,
     conversationStateRepository: conversationStateRepository,
     memberRepository: memberRepository,

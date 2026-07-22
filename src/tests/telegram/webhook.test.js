@@ -387,15 +387,18 @@ test('/thanhtoan in the ops chat dispatches the QR and never reaches OrderServic
   assert.match(reply.params.text, /Đã gửi QR thanh toán cho đơn HD1/);
 });
 
-test('/thanhtoan falls back to the booking QR dispatcher after an unknown order id', () => {
+test('/thanhtoan routes BOOKING_-prefixed ids straight to the booking QR dispatcher (no order lookup)', () => {
   let bookingId = null;
+  let orderLookupCalled = false;
   const f = setup({ opsChatId: 'ops-1', adminUserIds: '999',
-    dispatchPaymentQr: () => ({ ok: false, reason: 'not_found' }),
+    dispatchPaymentQr: () => { orderLookupCalled = true; return { ok: false, reason: 'not_found' }; },
     dispatchBookingQr: (id) => { bookingId = id; return { ok: true, dispatchResults: [] }; }
   });
-  f.post(opsMessage(6001, '/thanhtoan B1', 'ops-1'));
-  assert.equal(bookingId, 'B1');
-  assert.match(f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text, /QR thanh toán cho đặt phòng B1/);
+  f.post(opsMessage(6001, '/thanhtoan BOOKING_abc123', 'ops-1'));
+  assert.equal(bookingId, 'BOOKING_abc123');
+  assert.equal(orderLookupCalled, false, 'ids with the BOOKING_ prefix must never hit the order dispatcher');
+  assert.match(f.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /QR thanh toán cho đặt phòng BOOKING_abc123/);
 });
 
 test('/thanhtoan reports a clear not-found reply when neither order nor booking exists', () => {

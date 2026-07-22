@@ -103,12 +103,20 @@ function createBookingService(dependencies) {
     }
     if (action === 'select_slot') {
       var slot = interval(state.contextData.unit, message.payload || {});
-      var rooms = dependencies.roomRepository.list();
-      var bookings = [];
-      rooms.forEach(function (room) {
-        bookings = bookings.concat(dependencies.bookingRepository.findOverlapping(room.roomId, slot.startAt, slot.endAt));
-      });
-      var available = d.BookingBilling.findAvailableRooms(rooms, bookings, slot.startAt, slot.endAt);
+      // roomRepository.checkAvailability, when present, is a single POS call
+      // that already returns only free rooms for the exact window -- used in
+      // preference to the local list()+findOverlapping()+findAvailableRooms
+      // computation, which stays as the Sheet-backed fallback (Phase 1-4).
+      var available = typeof dependencies.roomRepository.checkAvailability === 'function'
+        ? dependencies.roomRepository.checkAvailability(slot.startAt, slot.endAt)
+        : (function () {
+          var rooms = dependencies.roomRepository.list();
+          var bookings = [];
+          rooms.forEach(function (room) {
+            bookings = bookings.concat(dependencies.bookingRepository.findOverlapping(room.roomId, slot.startAt, slot.endAt));
+          });
+          return d.BookingBilling.findAvailableRooms(rooms, bookings, slot.startAt, slot.endAt);
+        })();
       state = move(state, sm.Events.SELECT_SLOT, { startAt: slot.startAt, endAt: slot.endAt,
         durationHours: state.contextData.unit === 'hourly' ? slot.quantity : undefined,
         nights: state.contextData.unit === 'nightly' ? slot.quantity : undefined });
@@ -117,12 +125,26 @@ function createBookingService(dependencies) {
       }) })];
     }
     if (action === 'select_room') {
-      var room = dependencies.roomRepository.findById(message.payload && message.payload.roomId);
-      if (!room || !room.isAvailable) throw new Error('Room is not available');
-      var overlaps = dependencies.bookingRepository.findOverlapping(room.roomId,
-        state.contextData.startAt, state.contextData.endAt);
-      if (!d.BookingBilling.findAvailableRooms([room], overlaps, state.contextData.startAt,
-        state.contextData.endAt).length) throw new Error('Room is no longer available');
+      var roomId = message.payload && message.payload.roomId;
+      var room;
+      if (typeof dependencies.roomRepository.checkAvailability === 'function') {
+        // Re-run the same availability check used for select_slot rather
+        // than a separate findById -- the POS contract has no standalone
+        // "get one room" action, and this doubles as the re-validation step
+        // (createBooking itself re-validates overlap at commit time too, so
+        // this is a UX nicety, not the only safety net).
+        var stillAvailable = dependencies.roomRepository.checkAvailability(
+          state.contextData.startAt, state.contextData.endAt);
+        room = stillAvailable.find(function (item) { return String(item.roomId) === String(roomId); }) || null;
+        if (!room) throw new Error('Room is no longer available');
+      } else {
+        room = dependencies.roomRepository.findById(roomId);
+        if (!room || !room.isAvailable) throw new Error('Room is not available');
+        var overlaps = dependencies.bookingRepository.findOverlapping(room.roomId,
+          state.contextData.startAt, state.contextData.endAt);
+        if (!d.BookingBilling.findAvailableRooms([room], overlaps, state.contextData.startAt,
+          state.contextData.endAt).length) throw new Error('Room is no longer available');
+      }
       var quantity = state.contextData.unit === 'hourly' ? state.contextData.durationHours : state.contextData.nights;
       var bill = d.BookingBilling.calculateBookingBill(room, state.contextData.unit, quantity);
       state = move(state, sm.Events.SELECT_ROOM, {
@@ -137,11 +159,25 @@ function createBookingService(dependencies) {
       var timestamp = dependencies.now().toISOString();
       var booking = { bookingId: dependencies.createId(), customerId: customer.customerId,
         memberId: customer.memberId || null, roomId: state.contextData.roomId, unit: state.contextData.unit,
-        startAt: state.contextData.startAt, status: 'AWAITING_PAYMENT',
+        startAt: state.contextData.startAt, endAt: state.contextData.endAt, status: 'AWAITING_PAYMENT',
+        // Local preview only. When bookingRepository is POS-backed, save()
+        // overwrites totalAmount with the server-computed amount from
+        // createBooking -- Clawbot never sends this value up as authoritative.
         totalAmount: state.contextData.bill.totalAmount, createdAt: timestamp, updatedAt: timestamp };
       if (booking.unit === 'hourly') booking.durationHours = state.contextData.durationHours;
       else booking.nights = state.contextData.nights;
-      dependencies.bookingRepository.save(booking);
+      try {
+        dependencies.bookingRepository.save(booking);
+      } catch (error) {
+        if (error && error.code === 'ROOM_OVERLAP') {
+          move(state, sm.Events.CANCEL, { activeFlow: null });
+          return [outbound('text', {
+            text: 'Rất tiếc, phòng ' + (state.contextData.roomName || '') +
+              ' vừa có người đặt mất. Gõ /phong để chọn phòng khác.'
+          })];
+        }
+        throw error;
+      }
       dependencies.conversationStateRepository.set(customer.customerId, { customerId: customer.customerId,
         currentState: prepared.nextState, contextData: Object.assign({}, prepared.newContextData,
           { bookingId: booking.bookingId, activeFlow: null }), updatedAt: timestamp });
@@ -187,9 +223,54 @@ function createBookingService(dependencies) {
       ] };
     });
   }
+  // Staff-triggered "mark as paid" (mirrors OrderService.confirmPayment).
+  // Marks the booking PAID via bookingRepository.save (which, when
+  // POS-backed, calls completeBooking) and advances the conversation state
+  // if the customer is still sitting in AWAITING_PAYMENT for this booking.
+  function confirmPayment(bookingId, confirmedBy) {
+    return dependencies.withLock(function () {
+      if (typeof bookingId !== 'string' || bookingId.trim() === '') {
+        throw new TypeError('bookingId must be a non-empty string');
+      }
+      if (typeof confirmedBy !== 'string' || confirmedBy.trim() === '') {
+        throw new TypeError('confirmedBy must be a non-empty string');
+      }
+      var booking = dependencies.bookingRepository.findById(bookingId);
+      if (!booking) {
+        var missing = new Error('Booking not found: ' + bookingId);
+        missing.code = 'BOOKING_NOT_FOUND';
+        throw missing;
+      }
+      if (booking.status !== 'AWAITING_PAYMENT') {
+        var resolved = new Error('Booking payment is already resolved: ' + bookingId);
+        resolved.code = 'PAYMENT_ALREADY_RESOLVED';
+        resolved.status = booking.status;
+        throw resolved;
+      }
+      var customer = dependencies.customerRepository.findById(booking.customerId);
+      if (!customer) throw new Error('Customer not found for booking: ' + bookingId);
+      var timestamp = dependencies.now().toISOString();
+      dependencies.bookingRepository.save(Object.assign({}, booking, {
+        status: 'PAID', confirmedAt: timestamp, confirmedBy: confirmedBy, updatedAt: timestamp
+      }));
+      var state = dependencies.conversationStateRepository.get(booking.customerId);
+      if (state && state.currentState === sm.States.AWAITING_PAYMENT &&
+          state.contextData && state.contextData.bookingId === bookingId) {
+        var result = sm.transition(state.currentState, sm.Events.PAYMENT_CONFIRMED, state.contextData);
+        dependencies.conversationStateRepository.set(booking.customerId, {
+          customerId: booking.customerId, currentState: result.nextState,
+          contextData: result.newContextData, updatedAt: timestamp
+        });
+      }
+      return { customer: customer, outboundMessages: [outbound('text', {
+        text: 'Đặt phòng #' + booking.bookingId + ' đã được xác nhận thanh toán. Cảm ơn bạn!',
+        bookingId: booking.bookingId
+      })] };
+    });
+  }
   return Object.freeze({ handleMessage: function (message) {
     return dependencies.withLock(function () { return handleTransaction(message); });
-  }, sendPaymentQr: sendPaymentQr });
+  }, sendPaymentQr: sendPaymentQr, confirmPayment: confirmPayment });
 }
 
 var BookingService = Object.freeze({ create: createBookingService });

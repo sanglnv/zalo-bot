@@ -5,8 +5,10 @@
  * @property {string} roomId
  * @property {string} name
  * @property {string} roomType
- * @property {number} pricePerHour
- * @property {number} pricePerNight
+ * @property {number} hourlyRate
+ * @property {number} overnightRate
+ * @property {number=} dailyRate Not used by the bot's UI (hourly/nightly only), but present on
+ *   rooms coming back from the POS since it supports a third `daily` unit Clawbot doesn't expose.
  * @property {boolean} isAvailable
  */
 
@@ -18,10 +20,13 @@
  * @property {string} roomId
  * @property {'hourly'|'nightly'} unit
  * @property {string} startAt
+ * @property {string} endAt
  * @property {number=} durationHours
  * @property {number=} nights
  * @property {'AWAITING_PAYMENT'|'PAID'|'CANCELLED'|'EXPIRED'|'DONE'} status
  * @property {number} totalAmount
+ * @property {string=} confirmedAt
+ * @property {string=} confirmedBy
  * @property {string} createdAt
  * @property {string} updatedAt
  */

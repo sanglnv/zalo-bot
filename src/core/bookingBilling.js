@@ -6,7 +6,7 @@ function calculateBookingBill(room, unit, durationHoursOrNights) {
   if (!Number.isInteger(durationHoursOrNights) || durationHoursOrNights <= 0) {
     throw new TypeError('durationHoursOrNights must be a positive integer');
   }
-  var field = unit === 'hourly' ? 'pricePerHour' : 'pricePerNight';
+  var field = unit === 'hourly' ? 'hourlyRate' : 'overnightRate';
   if (!Number.isFinite(room[field]) || room[field] < 0) {
     throw new TypeError('room.' + field + ' must be a non-negative number');
   }
@@ -27,6 +27,9 @@ function findAvailableRooms(rooms, bookings, startAt, endAt) {
   bookings.forEach(function (booking) {
     if (!booking || !blocking[booking.status]) return;
     var bookingStart = new Date(booking.startAt).getTime();
+    // endAt is authoritative when present (always the case for bookings
+    // created since this field was added). The quantity-based recompute is
+    // kept only as a fallback for older rows that predate it.
     var quantity = booking.unit === 'hourly' ? booking.durationHours : booking.nights * 24;
     var bookingEnd = booking.endAt ? new Date(booking.endAt).getTime() : bookingStart + quantity * 3600000;
     if (Number.isFinite(bookingStart) && Number.isFinite(bookingEnd) && bookingStart < end && bookingEnd > start) {

@@ -18,8 +18,8 @@ function installCommon() {
     return { handleMessage() { return []; } };
   } };
   global.BotOrderRepository = () => repository(['save', 'findById', 'findByCustomerId', 'updateStatus']);
-  global.SheetBookingRepository = () => repository(['save', 'findById', 'findByCustomerId', 'updateStatus', 'findOverlapping']);
-  global.SheetRoomRepository = () => repository(['list', 'findById']);
+  global.PosBookingRepository = () => repository(['save', 'findById', 'findByCustomerId', 'updateStatus', 'findOverlapping']);
+  global.PosRoomRepository = () => repository(['list', 'findById', 'checkAvailability']);
   global.SheetCustomerRepository = () => repository(['save', 'findById', 'findByPlatformUserId']);
   global.SheetConversationStateRepository = () => repository(['get', 'set']);
   global.MemberRepository = () => ({});

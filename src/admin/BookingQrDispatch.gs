@@ -1,9 +1,10 @@
 'use strict';
 
 function buildBookingQrBookingService() {
+  var customerRepository = SheetCustomerRepository();
   return BookingService.create({
-    bookingRepository: SheetBookingRepository(), roomRepository: SheetRoomRepository(),
-    customerRepository: SheetCustomerRepository(), conversationStateRepository: SheetConversationStateRepository(),
+    bookingRepository: PosBookingRepository(customerRepository), roomRepository: PosRoomRepository(),
+    customerRepository: customerRepository, conversationStateRepository: SheetConversationStateRepository(),
     memberRepository: MemberRepository(),
     // BotRuntime's legacy QR formatter reads orderId for the transfer note.
     // Preserve its format while using the booking ID as the payment reference.
