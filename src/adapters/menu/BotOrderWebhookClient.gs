@@ -95,13 +95,21 @@ var BotOrderWebhookClient = (function () {
       );
     }
     var status = response.getResponseCode();
+    var rawText = response.getContentText();
     var body;
     try {
-      body = JSON.parse(response.getContentText());
+      body = JSON.parse(rawText);
     } catch (error) {
+      // HTTP 200 with unparseable content is almost always Apps Script
+      // serving an HTML page instead of the script's JSON output (stale
+      // deployment ID / "Who has access" misconfigured -> Google sign-in
+      // page, or the POS script itself threw -> Apps Script's own HTML
+      // error page). Without a body snippet this is undiagnosable from the
+      // ops alert alone -- see docs/bot-order-webhook-integration.md.
       throw new BotOrderWebhookError(
         'BOT_WEBHOOK_INFRA_ERROR',
-        'Bot order webhook returned invalid JSON (HTTP ' + status + ')',
+        'Bot order webhook returned invalid JSON (HTTP ' + status + '): ' +
+          String(rawText).slice(0, 200),
         requestId
       );
     }

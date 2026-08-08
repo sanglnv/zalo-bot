@@ -393,6 +393,13 @@ test('updateMember reuses a stable requestId per memberId, sends only name/phone
   assert.equal(loadClient(duplicateOptions).updateMember('M1', { name: 'New Name' }).name, 'New Name');
 });
 
+test('invalid JSON error includes a snippet of the raw response body for diagnosing HTML-instead-of-JSON responses', () => {
+  assert.throws(
+    () => loadClient({ invalidJson: true }).fetchMenuCatalog(),
+    /invalid JSON \(HTTP 200\): \{bad/
+  );
+});
+
 test('every infrastructure or business failure throws BotOrderWebhookError, with no fallback', () => {
   const cases = [
     { missingUrl: true, pattern: /Missing required script property: BOT_ORDER_WEBHOOK_URL/ },
