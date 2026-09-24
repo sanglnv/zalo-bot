@@ -209,6 +209,8 @@ var TelegramWebhook = (function () {
         reply('Không tìm thấy đơn hoặc đặt phòng ' + parsed + '.');
       } else if (result.reason === 'already_resolved') {
         reply(kind + ' ' + parsed + ' không còn chờ thanh toán (trạng thái: ' + (result.status || '?') + ').');
+      } else if (result.reason === 'order_total_unknown') {
+        reply('Không thể gửi QR cho đơn ' + parsed + ': Đơn thiếu tổng tiền từ POS, vui lòng xử lý trên POS.');
       } else {
         reply('Gửi QR cho đơn ' + parsed + ' thất bại: ' + (result.message || 'không xác định'));
       }

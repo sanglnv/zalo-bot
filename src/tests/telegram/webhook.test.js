@@ -438,6 +438,17 @@ test('/thanhtoan reports not_found and already_resolved distinctly', () => {
     resolved.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
     /HD-paid không còn chờ thanh toán \(trạng thái: PAID\)/
   );
+
+  const unknownTotal = setup({
+    opsChatId: 'ops-1',
+    adminUserIds: '999',
+    dispatchPaymentQr: () => ({ ok: false, reason: 'order_total_unknown' })
+  });
+  unknownTotal.post(opsMessage(604, '/thanhtoan HD-unknown', 'ops-1'));
+  assert.match(
+    unknownTotal.fetchCalls.find((call) => call.params.chat_id === 'ops-1').params.text,
+    /Không thể gửi QR cho đơn HD-unknown: Đơn thiếu tổng tiền từ POS, vui lòng xử lý trên POS\./
+  );
 });
 
 test('/thanhtoan is rejected for a sender outside TELEGRAM_ADMIN_USER_IDS when it is configured', () => {

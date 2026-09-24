@@ -53,6 +53,17 @@ test('payment handler distinguishes and logs not-found and system errors', () =>
   });
   assert.equal(broken.logs.length, 1);
   assert.equal(broken.logs[0].context.stage, 'confirm_payment');
+
+  const unknownTotal = fixture(() => {
+    const error = new Error('Order o1 is missing a valid totalAmount');
+    error.code = 'ORDER_TOTAL_UNKNOWN';
+    throw error;
+  });
+  assert.deepEqual(unknownTotal.handler.process('o1', 'staff'), {
+    ok: false, reason: 'order_total_unknown', message: 'Order o1 is missing a valid totalAmount'
+  });
+  assert.equal(unknownTotal.logs.length, 1);
+  assert.equal(unknownTotal.logs[0].context.stage, 'confirm_payment');
 });
 
 test('payment handler distinguishes a committed payment from notification failure', () => {

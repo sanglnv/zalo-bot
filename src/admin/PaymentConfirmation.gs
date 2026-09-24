@@ -113,7 +113,10 @@ function listPendingOrdersForStaff() {
     return;
   }
   var lines = pending.map(function (order) {
-    return order.orderId + ' — ' + order.totalAmount + ' — tạo lúc ' + order.createdAt;
+    var displayTotal = (order.totalAmount != null && Number.isFinite(order.totalAmount))
+      ? order.totalAmount
+      : 'chưa rõ';
+    return order.orderId + ' — ' + displayTotal + ' — tạo lúc ' + order.createdAt;
   });
   ui.alert('Đơn đang chờ thanh toán (' + pending.length + ')', lines.join('\n'), ui.ButtonSet.OK);
 }
@@ -162,6 +165,14 @@ function confirmSelectedOrderPaymentWithoutMetrics() {
   var ui = SpreadsheetApp.getUi();
   var selected = selectedOrder(ui);
   if (!selected) return;
+  if (selected.totalAmount == null || !Number.isFinite(selected.totalAmount)) {
+    ui.alert(
+      'Không thể xác nhận',
+      'Đơn ' + selected.orderId + ' thiếu tổng tiền từ POS, vui lòng xử lý trên POS.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
   var decision = ui.alert(
     'Xác nhận thanh toán',
     'Xác nhận đã nhận thanh toán cho đơn ' + selected.orderId +
@@ -181,6 +192,12 @@ function confirmSelectedOrderPaymentWithoutMetrics() {
     ui.alert(
       'Đã xác nhận thanh toán thành công nhưng gửi thông báo cho khách thất bại — ' +
       'vui lòng tự nhắn tin xác nhận cho khách.'
+    );
+  } else if (result.reason === 'order_total_unknown') {
+    ui.alert(
+      'Không thể xác nhận',
+      'Đơn ' + selected.orderId + ' thiếu tổng tiền từ POS, vui lòng xử lý trên POS.',
+      ui.ButtonSet.OK
     );
   } else if (result.reason === 'already_resolved') {
     ui.alert('Đơn này đã được xác nhận hoặc không còn chờ thanh toán.');

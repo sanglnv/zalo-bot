@@ -40,6 +40,10 @@ function createPaymentConfirmationHandler(dependencies) {
         log(error, 'confirm_payment', orderId, confirmedBy);
         return { ok: false, reason: 'not_found', message: error.message };
       }
+      if (error && error.code === 'ORDER_TOTAL_UNKNOWN') {
+        log(error, 'confirm_payment', orderId, confirmedBy);
+        return { ok: false, reason: 'order_total_unknown', message: error.message };
+      }
       log(error, 'confirm_payment', orderId, confirmedBy);
       return {
         ok: false,

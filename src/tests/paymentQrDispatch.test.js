@@ -71,6 +71,19 @@ test('dispatchPaymentQr distinguishes not_found and already_resolved without thr
     }
   });
   assert.deepEqual(resolved.dispatchPaymentQr('HD1'), { ok: false, reason: 'already_resolved', status: 'PAID' });
+
+  const unknownTotal = loadModule({
+    sendPaymentQr: () => {
+      const error = new Error('Order HD1 is missing a valid totalAmount');
+      error.code = 'ORDER_TOTAL_UNKNOWN';
+      throw error;
+    }
+  });
+  assert.deepEqual(unknownTotal.dispatchPaymentQr('HD1'), {
+    ok: false,
+    reason: 'order_total_unknown',
+    message: 'Order HD1 is missing a valid totalAmount'
+  });
 });
 
 test('dispatchPaymentQr reports sent_but_delivery_failed when the QR was generated but delivery throws', () => {

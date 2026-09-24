@@ -240,6 +240,24 @@ test('status mapping: completed/paid -> PAID, cancelled -> CANCELLED', () => {
   assert.equal(client.getOrder('HD1').confirmedAt, 'c');
 });
 
+test('normalizeOrder returns null totalAmount when total is missing, empty string, or not a number', () => {
+  const client = loadClient({
+    body: {
+      ok: true, action: 'getOrder', requestId: 'x', status: 'completed',
+      patch: { orders: [{ id: 'HD1', status: 'open', customerId: 'c1', total: '', createdAt: 'a', updatedAt: 'b' }], orderItems: [] }
+    }
+  });
+  assert.equal(client.getOrder('HD1').totalAmount, null);
+
+  const missingClient = loadClient({
+    body: {
+      ok: true, action: 'getOrder', requestId: 'x', status: 'completed',
+      patch: { orders: [{ id: 'HD2', status: 'open', customerId: 'c1', createdAt: 'a', updatedAt: 'b' }], orderItems: [] }
+    }
+  });
+  assert.equal(missingClient.getOrder('HD2').totalAmount, null);
+});
+
 test('createOrder returns the POS-assigned order with items on success', () => {
   const options = {
     body: {
@@ -286,6 +304,44 @@ test('completeOrder and cancelOrder use a stable per-order requestId and treat d
   const client = loadClient(options);
   assert.deepEqual(client.completeOrder('HD1', 'bank_transfer'), { orderId: 'HD1', duplicate: true });
   assert.equal(options.capturedRequest.body.requestId, 'clawbot-completeOrder:HD1');
+});
+
+test('completeOrder sends amount and paymentReference when provided', () => {
+  const options = {
+    body: { ok: true, action: 'completeOrder', requestId: 'x', orderId: 'HD1', status: 'completed' }
+  };
+  const client = loadClient(options);
+  client.completeOrder('HD1', 'bank_transfer', { amount: 55000, paymentReference: 'FT123' });
+  assert.equal(options.capturedRequest.body.payload.orderId, 'HD1');
+  assert.equal(options.capturedRequest.body.payload.paymentMethod, 'bank_transfer');
+  assert.equal(options.capturedRequest.body.payload.amount, 55000);
+  assert.equal(options.capturedRequest.body.payload.paymentReference, 'FT123');
+});
+
+test('4xx error response from POS with error field surfaces code and message distinctly', () => {
+  const options = {
+    status: 400,
+    body: { ok: false, code: 'BOT_WEBHOOK_ORDER_NOT_FOUND', error: 'Order not found' }
+  };
+  assert.throws(
+    () => loadClient(options).getOrder('ORDER_MISSING'),
+    (err) => err.code === 'BOT_WEBHOOK_ORDER_NOT_FOUND' && err.message === 'Order not found'
+  );
+});
+
+test('5xx and 429 errors retain BOT_WEBHOOK_INFRA_ERROR even if POS returns JSON error body', () => {
+  const cases = [
+    { status: 500, body: { ok: false, code: 'INTERNAL_ERROR', error: 'server crash' }, pattern: /server crash/ },
+    { status: 502, body: { ok: false, error: 'bad gateway' }, pattern: /bad gateway/ },
+    { status: 503, body: { ok: false, code: 'BOT_WEBHOOK_NOT_CONFIGURED', error: 'POS not configured' }, pattern: /POS not configured/ },
+    { status: 429, body: { ok: false, error: 'rate limited' }, pattern: /rate limited/ }
+  ];
+  cases.forEach((options) => {
+    assert.throws(
+      () => loadClient(options).getOrder('HD1'),
+      (err) => err.code === 'BOT_WEBHOOK_INFRA_ERROR' && options.pattern.test(err.message)
+    );
+  });
 });
 
 test('getMemberProfile normalizes the member and its request uses a fresh (non-stable) requestId', () => {

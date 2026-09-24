@@ -12,6 +12,9 @@ var BotRuntime = (function () {
   function loadCatalog() { return BotOrderWebhookClient.fetchMenuCatalog(); }
 
   function createPaymentQrUrl(order) {
+    if (!order || order.totalAmount == null || !Number.isFinite(Number(order.totalAmount))) {
+      throw new Error('Cannot create payment QR for order without valid totalAmount');
+    }
     var template = properties().getProperty('VIETQR_TEMPLATE') || 'compact2';
     var prefix = properties().getProperty('VIETQR_TRANSFER_PREFIX') || 'DH';
     return 'https://img.vietqr.io/image/' +

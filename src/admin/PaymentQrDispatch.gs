@@ -65,6 +65,9 @@ function dispatchPaymentQr(orderId) {
     if (error && error.code === 'PAYMENT_ALREADY_RESOLVED') {
       return { ok: false, reason: 'already_resolved', status: error.status };
     }
+    if (error && error.code === 'ORDER_TOTAL_UNKNOWN') {
+      return { ok: false, reason: 'order_total_unknown', message: error.message };
+    }
     return { ok: false, reason: 'error', message: error && error.message ? error.message : String(error) };
   }
   try {

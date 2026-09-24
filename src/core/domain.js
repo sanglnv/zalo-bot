@@ -36,7 +36,7 @@
  * @property {string} customerId
  * @property {OrderItem[]} items
  * @property {string} status
- * @property {number} totalAmount
+ * @property {number|null} totalAmount
  * @property {string} createdAt ISO-8601 timestamp
  * @property {string} updatedAt ISO-8601 timestamp
  */

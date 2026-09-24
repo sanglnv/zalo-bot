@@ -68,6 +68,61 @@ test('save() with status PAID calls completeOrder with the hardcoded bank_transf
   assert.deepEqual(calls, [{ orderId: 'HD-REMOTE-1', paymentMethod: 'bank_transfer' }]);
 });
 
+test('save() with status PAID throws when totalAmount is missing or invalid', () => {
+  const repo = loadRepository({
+    completeOrder() { return { orderId: 'HD-1', duplicate: false }; }
+  })();
+  assert.throws(
+    () => repo.save({ orderId: 'HD-1', status: 'PAID', totalAmount: null }),
+    /requires a valid totalAmount/
+  );
+  assert.throws(
+    () => repo.save({ orderId: 'HD-1', status: 'PAID', totalAmount: 'not-a-number' }),
+    /requires a valid totalAmount/
+  );
+});
+
+test('save() with status PAID passes genuine paymentReference or omits when absent', () => {
+  const calls = [];
+  const repo = loadRepository({
+    completeOrder(orderId, paymentMethod, options) {
+      calls.push({ orderId, paymentMethod, options });
+      return { orderId, duplicate: false };
+    }
+  })();
+
+  // With genuine paymentReference
+  repo.save({
+    orderId: 'HD-1', status: 'PAID', totalAmount: 50000, paymentReference: 'FT12345'
+  });
+  assert.deepEqual(calls[0].options, { amount: 50000, paymentReference: 'FT12345' });
+
+  // Without paymentReference: must NOT invent fake BANK_xxx
+  repo.save({
+    orderId: 'HD-2', status: 'PAID', totalAmount: 70000
+  });
+  assert.deepEqual(calls[1].options, { amount: 70000 });
+  assert.equal('paymentReference' in calls[1].options, false);
+});
+
+test('save(PAID) throws when order was read from POS with missing total', () => {
+  const repo = loadRepository({
+    getOrder() {
+      return { orderId: 'HD-NO-TOTAL', status: 'AWAITING_PAYMENT', totalAmount: null };
+    },
+    completeOrder() {
+      return { orderId: 'HD-NO-TOTAL', duplicate: false };
+    }
+  })();
+
+  const order = repo.findById('HD-NO-TOTAL');
+  assert.equal(order.totalAmount, null);
+  assert.throws(
+    () => repo.save(Object.assign({}, order, { status: 'PAID' })),
+    /requires a valid totalAmount/
+  );
+});
+
 test('save() with status EXPIRED calls cancelOrder with reason payment_timeout', () => {
   const calls = [];
   const repo = loadRepository({

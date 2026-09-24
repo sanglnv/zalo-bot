@@ -169,6 +169,25 @@ test('confirm_payment delegates to the existing processOrderPayment path', () =>
   assert.deepEqual(calls, [{ orderId: 'o1', confirmedBy: 'openclaw:sang' }]);
 });
 
+test('confirm_payment returns order_total_unknown when processOrderPayment rejects missing total', () => {
+  global.processOrderPayment = (orderId, confirmedBy) => ({
+    ok: false,
+    reason: 'order_total_unknown',
+    message: 'Order o1 is missing a valid totalAmount'
+  });
+
+  const response = AdminApi.doAdminPostWithoutMetrics({
+    parameter: { action: 'confirm_payment', admin_token: 'admin-secret' },
+    postData: { contents: JSON.stringify({ orderId: 'o1', confirmedBy: 'openclaw:sang' }) }
+  });
+
+  assert.deepEqual(readJsonResponse(response), {
+    ok: false,
+    reason: 'order_total_unknown',
+    message: 'Order o1 is missing a valid totalAmount'
+  });
+});
+
 test('get_catalog reads the live D1 catalog via the Telegram gateway when available', () => {
   installProperties({
     ADMIN_API_TOKEN: 'admin-secret',

@@ -113,18 +113,29 @@ var BotOrderWebhookClient = (function () {
         requestId
       );
     }
-    if (status !== 200 || !body || typeof body !== 'object') {
+    if (!body || typeof body !== 'object') {
       throw new BotOrderWebhookError(
         'BOT_WEBHOOK_INFRA_ERROR',
         'Bot order webhook returned HTTP ' + status,
         requestId
       );
     }
+    if (status !== 200) {
+      if (status >= 500 || status === 429) {
+        var infraMsg = (body.error || body.message)
+          ? ('Bot order webhook returned HTTP ' + status + ': ' + (body.error || body.message))
+          : ('Bot order webhook returned HTTP ' + status);
+        throw new BotOrderWebhookError('BOT_WEBHOOK_INFRA_ERROR', infraMsg, body.requestId || requestId);
+      }
+      var errCode = body.code || ('HTTP_' + status);
+      var errMsg = body.error || body.message || ('Bot order webhook returned HTTP ' + status);
+      throw new BotOrderWebhookError(errCode, errMsg, body.requestId || requestId);
+    }
     if (body.ok !== true) {
       throw new BotOrderWebhookError(
         body.code || 'BOT_WEBHOOK_INFRA_ERROR',
-        body.message || ('Bot order webhook response is missing ok:true (got: ' + JSON.stringify(body) + ')'),
-        body.requestId
+        body.error || body.message || ('Bot order webhook response is missing ok:true (got: ' + JSON.stringify(body) + ')'),
+        body.requestId || requestId
       );
     }
     return body;
@@ -191,12 +202,18 @@ var BotOrderWebhookClient = (function () {
   }
 
   function normalizeOrder(remote) {
+    var rawTotal = remote && remote.total;
+    var totalAmount = (typeof rawTotal === 'number' && Number.isFinite(rawTotal))
+      ? rawTotal
+      : (rawTotal != null && rawTotal !== '' && Number.isFinite(Number(rawTotal))
+        ? Number(rawTotal)
+        : null);
     return {
       orderId: remote.id,
       customerId: remote.customerId || null,
       items: [],
       status: internalStatusFromRemote(remote),
-      totalAmount: typeof remote.total === 'number' ? remote.total : Number(remote.total) || 0,
+      totalAmount: totalAmount,
       createdAt: remote.createdAt,
       updatedAt: remote.updatedAt,
       confirmedAt: remote.completedAt || null,
@@ -325,10 +342,17 @@ var BotOrderWebhookClient = (function () {
     return normalized;
   }
 
-  function completeOrder(orderId, paymentMethod) {
+  function completeOrder(orderId, paymentMethod, options) {
+    if (typeof options === 'number') {
+      options = { amount: options };
+    }
+    options = options || {};
+    var payload = { orderId: orderId, paymentMethod: paymentMethod };
+    if (options.amount != null) payload.amount = options.amount;
+    if (options.paymentReference != null) payload.paymentReference = options.paymentReference;
     var body = call(
       'completeOrder',
-      { orderId: orderId, paymentMethod: paymentMethod },
+      payload,
       'completeOrder:' + orderId
     );
     // duplicate/processing means this exact operation was already applied --

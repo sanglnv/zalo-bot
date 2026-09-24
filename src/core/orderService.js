@@ -35,6 +35,16 @@ function PaymentAlreadyResolvedError(orderId, status) {
 PaymentAlreadyResolvedError.prototype = Object.create(Error.prototype);
 PaymentAlreadyResolvedError.prototype.constructor = PaymentAlreadyResolvedError;
 
+function OrderTotalUnknownError(orderId) {
+  this.name = 'OrderTotalUnknownError';
+  this.code = 'ORDER_TOTAL_UNKNOWN';
+  this.orderId = orderId;
+  this.message = 'Order ' + orderId + ' is missing a valid totalAmount';
+  if (Error.captureStackTrace) Error.captureStackTrace(this, OrderTotalUnknownError);
+}
+OrderTotalUnknownError.prototype = Object.create(Error.prototype);
+OrderTotalUnknownError.prototype.constructor = OrderTotalUnknownError;
+
 function UserActionError(code, customerMessage, action, currentState) {
   this.name = 'UserActionError';
   this.code = code || 'USER_ACTION_ERROR';
@@ -327,9 +337,12 @@ function createOrderService(dependencies) {
   }
 
   function pendingOrderResponse(order) {
+    var displayTotal = (order.totalAmount != null && Number.isFinite(order.totalAmount))
+      ? formatMoney(order.totalAmount)
+      : 'chưa rõ';
     return [outbound('button', {
       text: 'Bạn đang có đơn #' + order.orderId + ' chờ thanh toán.\nTổng tiền: ' +
-        formatMoney(order.totalAmount),
+        displayTotal,
       buttons: [
         { action: 'resend_qr', label: 'Xem lại QR' },
         { action: 'status', label: 'Trạng thái' },
@@ -413,6 +426,7 @@ function createOrderService(dependencies) {
       donhang: 'status',
       huydon: 'cancel',
       trogiup: 'help',
+      thanhtoan: 'resend_qr',
       thongtin: 'update_profile',
       capnhat: 'update_profile'
     };
@@ -710,9 +724,12 @@ function createOrderService(dependencies) {
         })];
       }
       if (orderForStatus.status === 'AWAITING_PAYMENT') return pendingOrderResponse(orderForStatus);
+      var displayTotal = (orderForStatus.totalAmount != null && Number.isFinite(orderForStatus.totalAmount))
+        ? formatMoney(orderForStatus.totalAmount)
+        : 'chưa rõ';
       return [outbound('button', {
         text: 'Đơn #' + orderForStatus.orderId + '\nTrạng thái: ' + orderForStatus.status +
-          '\nTổng tiền: ' + formatMoney(orderForStatus.totalAmount),
+          '\nTổng tiền: ' + displayTotal,
         buttons: [{ action: 'new_order', label: 'Đặt đơn mới' }]
       })];
     }
@@ -721,6 +738,9 @@ function createOrderService(dependencies) {
       var orderForQr = pendingOrder(state, customer);
       if (!orderForQr) {
         throw userError('NO_PENDING_PAYMENT', 'Không có đơn nào đang chờ thanh toán.', action, state);
+      }
+      if (orderForQr.totalAmount == null || !Number.isFinite(orderForQr.totalAmount)) {
+        throw userError('ORDER_TOTAL_UNKNOWN', 'Đơn hàng đang thiếu tổng tiền, vui lòng liên hệ nhân viên hỗ trợ.', action, state);
       }
       return [outbound('image', {
         purpose: 'payment_qr', data: dependencies.createQrContent(orderForQr), orderId: orderForQr.orderId,
@@ -780,6 +800,9 @@ function createOrderService(dependencies) {
       var awaiting = requireAwaitingPayment(orderId);
       var order = awaiting.order;
       var state = awaiting.state;
+      if (order.totalAmount == null || !Number.isFinite(order.totalAmount)) {
+        throw new OrderTotalUnknownError(orderId);
+      }
       var customer = dependencies.customerRepository.findById(order.customerId);
       if (!customer) throw new Error('Customer not found for order: ' + orderId);
       var timestamp = dependencies.now().toISOString();
@@ -858,6 +881,9 @@ function createOrderService(dependencies) {
       }
       var awaiting = requireAwaitingPayment(orderId);
       var order = awaiting.order;
+      if (order.totalAmount == null || !Number.isFinite(order.totalAmount)) {
+        throw new OrderTotalUnknownError(orderId);
+      }
       var customer = dependencies.customerRepository.findById(order.customerId);
       if (!customer) throw new Error('Customer not found for order: ' + orderId);
       var qrContent = dependencies.createQrContent(order);
@@ -892,6 +918,7 @@ var OrderService = Object.freeze({
   Errors: Object.freeze({
     OrderNotFoundError: OrderNotFoundError,
     PaymentAlreadyResolvedError: PaymentAlreadyResolvedError,
+    OrderTotalUnknownError: OrderTotalUnknownError,
     UserActionError: UserActionError
   })
 });

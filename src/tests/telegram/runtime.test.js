@@ -29,3 +29,19 @@ test('loads catalog from the menu source webhook and creates a direct VietQR Qui
   );
   assert.match(TelegramRuntime.fallbackMessage(), /0900 000 000/);
 });
+
+test('createPaymentQrUrl throws an error if totalAmount is missing or non-finite', () => {
+  assert.throws(
+    () => TelegramRuntime.createPaymentQrUrl({ orderId: 'abc123', totalAmount: null }),
+    /Cannot create payment QR for order without valid totalAmount/
+  );
+  assert.throws(
+    () => TelegramRuntime.createPaymentQrUrl({ orderId: 'abc123', totalAmount: NaN }),
+    /Cannot create payment QR for order without valid totalAmount/
+  );
+  assert.throws(
+    () => TelegramRuntime.createPaymentQrUrl(null),
+    /Cannot create payment QR for order without valid totalAmount/
+  );
+});
+

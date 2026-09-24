@@ -39,10 +39,15 @@ function BotOrderRepository() {
       return order;
     }
     if (order.status === 'PAID') {
-      // Clawbot only supports VietQR bank transfer today; paymentMethod is
-      // mandatory on completeOrder but there is no per-order method to pass
-      // through from the current UI.
-      BotOrderWebhookClient.completeOrder(order.orderId, 'bank_transfer');
+      var rawAmount = typeof order.totalAmount === 'number' ? order.totalAmount : (order.totalAmount != null ? Number(order.totalAmount) : (order.total != null ? Number(order.total) : null));
+      if (rawAmount == null || !Number.isFinite(rawAmount)) {
+        throw new Error('BotOrderRepository.save(PAID) requires a valid totalAmount, got: ' + JSON.stringify(order.totalAmount));
+      }
+      var options = { amount: rawAmount };
+      if (order.paymentReference) {
+        options.paymentReference = order.paymentReference;
+      }
+      BotOrderWebhookClient.completeOrder(order.orderId, 'bank_transfer', options);
       return order;
     }
     if (order.status === 'EXPIRED') {

@@ -691,3 +691,74 @@ test('serialized expiry and payment confirmation allow only one winner', () => {
   );
   assert.equal(paid.orders[0].status, 'PAID');
 });
+
+test('confirmPayment throws OrderTotalUnknownError when order totalAmount is null or non-finite', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  f.orders[0].totalAmount = null;
+
+  assert.throws(
+    () => f.service.confirmPayment(orderId, 'staff@example.com'),
+    (error) => error instanceof OrderService.Errors.OrderTotalUnknownError &&
+      error.code === 'ORDER_TOTAL_UNKNOWN' &&
+      error.orderId === orderId
+  );
+  assert.equal(f.orders[0].status, 'AWAITING_PAYMENT');
+});
+
+test('sendPaymentQr throws OrderTotalUnknownError when order totalAmount is null or non-finite', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  f.orders[0].totalAmount = null;
+
+  assert.throws(
+    () => f.service.sendPaymentQr(orderId),
+    (error) => error instanceof OrderService.Errors.OrderTotalUnknownError &&
+      error.code === 'ORDER_TOTAL_UNKNOWN' &&
+      error.orderId === orderId
+  );
+});
+
+test('resend_qr and /thanhtoan in bot chat reject when order totalAmount is null', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  f.orders[0].totalAmount = null;
+
+  assert.throws(
+    () => f.service.handleMessage({
+      platform: 'test-channel',
+      platformUserId: 'user-1',
+      text: '',
+      payload: { action: 'resend_qr' }
+    }),
+    (error) => error.code === 'ORDER_TOTAL_UNKNOWN' &&
+      /thiếu tổng tiền/.test(error.customerMessage)
+  );
+
+  assert.throws(
+    () => f.service.handleMessage({
+      platform: 'test-channel',
+      platformUserId: 'user-1',
+      text: '/thanhtoan',
+      payload: null
+    }),
+    (error) => error.code === 'ORDER_TOTAL_UNKNOWN' &&
+      /thiếu tổng tiền/.test(error.customerMessage)
+  );
+});
+
+test('pendingOrderResponse and status show "chưa rõ" when totalAmount is null', () => {
+  const f = fixture();
+  const orderId = createAwaitingPaymentOrder(f);
+  f.orders[0].totalAmount = null;
+
+  const statusResult = f.service.handleMessage({
+    platform: 'test-channel',
+    platformUserId: 'user-1',
+    text: '/xemdon',
+    payload: null
+  });
+  assert.match(statusResult[0].content.text, /chưa rõ/);
+  assert.doesNotMatch(statusResult[0].content.text, /0 ₫/);
+});
+

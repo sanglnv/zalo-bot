@@ -53,14 +53,37 @@ function scanAndExpireStalePayments() {
       var chatId = PropertiesService.getScriptProperties()
         .getProperty('TELEGRAM_OPERATIONS_CHAT_ID');
       if (chatId) {
-        TelegramClient.create().execute({
-          method: 'sendMessage',
-          params: {
-            chat_id: chatId,
-            text: '⚠️ Quét đơn chờ thanh toán đã thất bại: ' +
-              (error && error.message ? error.message : String(error))
+        var cache = typeof CacheService === 'undefined' ? null : CacheService.getScriptCache();
+        var codePart = (error && error.code)
+          ? String(error.code).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 32)
+          : '';
+        var msgPart = (error && error.message)
+          ? String(error.message).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 50)
+          : '';
+        var discriminant = [codePart, msgPart].filter(Boolean).join('_');
+        var cacheKey = 'alert_cooldown_payment_expiry_scan_failed' +
+          (discriminant ? '_' + discriminant : '');
+        var isCoolingDown = false;
+        if (cache) {
+          try {
+            isCoolingDown = !!cache.get(cacheKey);
+          } catch (cacheError) {
+            isCoolingDown = false;
           }
-        });
+        }
+        if (!isCoolingDown) {
+          TelegramClient.create().execute({
+            method: 'sendMessage',
+            params: {
+              chat_id: chatId,
+              text: '⚠️ Quét đơn chờ thanh toán đã thất bại: ' +
+                (error && error.message ? error.message : String(error))
+            }
+          });
+          if (cache) {
+            try { cache.put(cacheKey, '1', 1800); } catch (e) {}
+          }
+        }
       }
     } catch (ignore) {}
     throw error;
